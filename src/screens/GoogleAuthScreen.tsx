@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Video } from "lucide-react";
 
@@ -97,7 +98,20 @@ export default function GoogleAuthScreen() {
           </Button>
         </div>
 
-        <p className="mt-4 text-xs text-muted-foreground">Your credentials are stored locally in your browser.</p>
+        <div className="mt-4 space-y-2">
+          <p className="text-xs text-muted-foreground">Your credentials are stored locally in your browser.</p>
+          <div className="flex items-center justify-center gap-3 text-xs text-muted-foreground">
+            <Link href="/" className="transition-colors hover:text-foreground">
+              Home
+            </Link>
+            <Link href="/privacy" className="transition-colors hover:text-foreground">
+              Privacy
+            </Link>
+            <Link href="/terms" className="transition-colors hover:text-foreground">
+              Terms
+            </Link>
+          </div>
+        </div>
       </div>
     </div>
   );

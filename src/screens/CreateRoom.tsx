@@ -11,7 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { searchDriveFolder } from "@/lib/googleApi";
-import { generateEvaluationPrompt, parseRubricsFromCSV } from "@/lib/rubricParser";
+import { generateEvaluationPrompt, RUBRIC_FILE_ACCEPT } from "@/lib/rubricParser";
+import { parseRubricUpload } from "@/lib/rubricUpload";
 import { useAppStore } from "@/stores/useAppStore";
 import type { AIProvider, RubricCriteria } from "@/types";
 
@@ -39,6 +40,7 @@ export default function CreateRoom() {
   const [rubrics, setRubrics] = useState<RubricCriteria[]>([]);
   const [evaluationPrompt, setEvaluationPrompt] = useState("");
   const [rubricFileName, setRubricFileName] = useState("");
+  const [rubricParsing, setRubricParsing] = useState(false);
   const [creating, setCreating] = useState(false);
 
   const handleSearchFolder = useCallback(async () => {
@@ -72,16 +74,22 @@ export default function CreateRoom() {
       return;
     }
 
+    setRubricParsing(true);
+
     try {
-      const parsed = await parseRubricsFromCSV(file);
-      setRubrics(parsed);
+      const parsed = await parseRubricUpload(file);
+      setRubrics(parsed.rubrics);
       setRubricFileName(file.name);
-      setEvaluationPrompt(generateEvaluationPrompt(parsed));
+      setEvaluationPrompt(generateEvaluationPrompt(parsed.rubrics, parsed.sourceText));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to parse rubrics file";
+      const message = error instanceof Error ? error.message : "Failed to parse rubric file";
       setRubricFileName("");
       setRubrics([]);
-      window.alert(`Failed to parse rubrics: ${message}`);
+      setEvaluationPrompt("");
+      window.alert(`Failed to parse rubric file: ${message}`);
+    } finally {
+      setRubricParsing(false);
+      event.target.value = "";
     }
   }, []);
 
@@ -111,13 +119,13 @@ export default function CreateRoom() {
     router.push(`/room/${room.id}`);
   }, [addRoom, aiApiKey, aiModel, aiProvider, description, evaluationPrompt, folderResult, name, router, rubrics]);
 
-  const isValid = Boolean(name.trim() && folderResult && rubrics.length > 0 && aiApiKey.trim());
+  const isValid = Boolean(name.trim() && folderResult && rubrics.length > 0 && aiApiKey.trim() && !rubricParsing);
   const selectedProvider = AI_PROVIDERS.find((provider) => provider.value === aiProvider)!;
 
   return (
     <Layout>
       <div className="max-w-2xl">
-        <Button variant="ghost" size="sm" className="mb-4 text-muted-foreground" onClick={() => router.push("/")}>
+        <Button variant="ghost" size="sm" className="mb-4 text-muted-foreground" onClick={() => router.push("/dashboard")}>
           <ArrowLeft className="mr-1.5 h-4 w-4" /> Back
         </Button>
 
@@ -178,16 +186,20 @@ export default function CreateRoom() {
           <section className="glass-card-elevated animate-fade-in space-y-4 p-6">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Rubrics</h2>
             <div className="space-y-2">
-              <Label>Upload Rubrics CSV *</Label>
+              <Label>Upload Rubric File *</Label>
               <p className="mb-2 text-xs text-muted-foreground">
-                CSV with columns: <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">name</span>,{" "}
+                CSV, PDF, DOC, or DOCX. CSV can use columns{" "}
+                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">name</span>,{" "}
                 <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">description</span> (optional),{" "}
-                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">maxScore</span> (optional, default 5)
+                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">maxScore</span> (optional, default 5). For PDF and Word
+                files, use a table or bullet list with criterion names and optional score ranges.
               </p>
               <label className="flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed border-border p-4 transition-colors hover:border-primary/50 hover:bg-secondary/50">
                 <Upload className="h-5 w-5 text-muted-foreground" />
-                <span className="text-sm text-muted-foreground">{rubricFileName || "Choose CSV file..."}</span>
-                <input type="file" accept=".csv" className="hidden" onChange={handleRubricUpload} />
+                <span className="text-sm text-muted-foreground">
+                  {rubricParsing ? "Parsing rubric file..." : rubricFileName || "Choose CSV, PDF, DOC, or DOCX file..."}
+                </span>
+                <input type="file" accept={RUBRIC_FILE_ACCEPT} className="hidden" onChange={handleRubricUpload} disabled={rubricParsing} />
               </label>
             </div>
 

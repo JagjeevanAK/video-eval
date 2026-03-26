@@ -13,7 +13,7 @@ export default function SettingsPage() {
 
   return (
     <Layout>
-      <Button variant="ghost" size="sm" className="mb-4 text-muted-foreground" onClick={() => router.push("/")}>
+      <Button variant="ghost" size="sm" className="mb-4 text-muted-foreground" onClick={() => router.push("/dashboard")}>
         <ArrowLeft className="mr-1.5 h-4 w-4" /> Back
       </Button>
 
@@ -33,7 +33,7 @@ export default function SettingsPage() {
             size="sm"
             onClick={() => {
               clearAuth();
-              router.push("/");
+              router.push("/dashboard");
             }}
           >
             Sign out &amp; Re-authenticate

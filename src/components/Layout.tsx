@@ -13,7 +13,7 @@ interface LayoutProps {
 }
 
 const navItems = [
-  { path: "/", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { path: "/create", label: "New Room", icon: Plus },
   { path: "/settings", label: "Settings", icon: Settings },
 ];
