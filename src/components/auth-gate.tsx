@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import GoogleAuthScreen from "@/screens/GoogleAuthScreen";
 import { useStoreHydrated } from "@/hooks/use-store-hydrated";
-import { isPublicRoute } from "@/lib/publicRoutes";
+import { isPublicRoute, isKnownRoute } from "@/lib/publicRoutes";
 import { useAppStore } from "@/stores/useAppStore";
 
 interface AuthGateProps {
@@ -16,8 +16,9 @@ export function AuthGate({ children }: AuthGateProps) {
   const hydrated = useStoreHydrated();
   const isAuthenticated = useAppStore((state) => state.auth.isAuthenticated);
   const isPublic = isPublicRoute(pathname);
+  const isKnown = isKnownRoute(pathname);
 
-  if (isPublic) {
+  if (isPublic || !isKnown) {
     return <>{children}</>;
   }
 
