@@ -1,7 +1,7 @@
 "use client";
 
 import type { ChangeEvent } from "react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertCircle, ArrowLeft, CheckCircle2, FileText, FolderSearch, Sparkles, Upload } from "lucide-react";
 
@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { searchDriveFolder } from "@/lib/googleApi";
 import { generateEvaluationPrompt, RUBRIC_FILE_ACCEPT } from "@/lib/rubricParser";
-import { parseRubricUpload } from "@/lib/rubricUpload";
+import { parseRubricUpload, summarizeRubricsUpload } from "@/lib/rubricUpload";
 import { useAppStore } from "@/stores/useAppStore";
 import type { AIProvider, RubricCriteria } from "@/types";
 
@@ -38,10 +38,17 @@ export default function CreateRoom() {
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiModel, setAiModel] = useState("");
   const [rubrics, setRubrics] = useState<RubricCriteria[]>([]);
+  const [rubricSourceText, setRubricSourceText] = useState("");
+  const [rubricSummary, setRubricSummary] = useState("");
   const [evaluationPrompt, setEvaluationPrompt] = useState("");
   const [rubricFileName, setRubricFileName] = useState("");
   const [rubricParsing, setRubricParsing] = useState(false);
+  const [summarizing, setSummarizing] = useState(false);
+  const [summaryError, setSummaryError] = useState("");
   const [creating, setCreating] = useState(false);
+
+  // Track last parsed rubrics so we can re-summarize when the API key changes
+  const pendingSummarizeRef = useRef<{ sourceText: string } | null>(null);
 
   const handleSearchFolder = useCallback(async () => {
     if (!folderName.trim() || !auth.accessToken) {
@@ -68,6 +75,34 @@ export default function CreateRoom() {
     }
   }, [auth.accessToken, folderName]);
 
+  const doSummarize = useCallback(
+    async (sourceText: string) => {
+      if (!aiApiKey.trim()) {
+        return;
+      }
+
+      setSummarizing(true);
+      setSummaryError("");
+
+      try {
+        const summary = await summarizeRubricsUpload({
+          provider: aiProvider,
+          apiKey: aiApiKey.trim(),
+          model: aiModel.trim() || undefined,
+          rubricText: sourceText,
+        });
+        setRubricSummary(summary);
+        setEvaluationPrompt(generateEvaluationPrompt(rubrics, sourceText));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to summarize rubrics";
+        setSummaryError(message);
+      } finally {
+        setSummarizing(false);
+      }
+    },
+    [aiApiKey, aiModel, aiProvider, rubrics],
+  );
+
   const handleRubricUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -75,17 +110,25 @@ export default function CreateRoom() {
     }
 
     setRubricParsing(true);
+    setSummaryError("");
+    setRubricSummary("");
+    setEvaluationPrompt("");
 
     try {
       const parsed = await parseRubricUpload(file);
       setRubrics(parsed.rubrics);
       setRubricFileName(file.name);
-      setEvaluationPrompt(generateEvaluationPrompt(parsed.rubrics, parsed.sourceText));
+
+      const sourceText = parsed.sourceText || parsed.rubrics.map((r) => `${r.name}: ${r.description || ""}`).join("\n");
+      setRubricSourceText(sourceText);
+
+      // If API key is already set, auto-summarize
+      pendingSummarizeRef.current = { sourceText };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to parse rubric file";
       setRubricFileName("");
       setRubrics([]);
-      setEvaluationPrompt("");
+      setRubricSourceText("");
       window.alert(`Failed to parse rubric file: ${message}`);
     } finally {
       setRubricParsing(false);
@@ -93,12 +136,23 @@ export default function CreateRoom() {
     }
   }, []);
 
+  // Auto-summarize when rubrics are parsed AND API key is available
+  useEffect(() => {
+    if (pendingSummarizeRef.current && aiApiKey.trim() && !summarizing && rubrics.length > 0) {
+      const { sourceText } = pendingSummarizeRef.current;
+      pendingSummarizeRef.current = null;
+      void doSummarize(sourceText);
+    }
+  }, [aiApiKey, doSummarize, rubrics.length, summarizing]);
+
   const handleCreate = useCallback(() => {
     if (!name.trim() || !folderResult || rubrics.length === 0 || !aiApiKey.trim()) {
       return;
     }
 
     setCreating(true);
+
+    const prompt = evaluationPrompt || generateEvaluationPrompt(rubrics, rubricSourceText);
 
     const room = {
       id: crypto.randomUUID(),
@@ -110,16 +164,16 @@ export default function CreateRoom() {
       driveFolderId: folderResult.id,
       driveFolderName: folderResult.name,
       rubrics,
-      evaluationPrompt,
+      evaluationPrompt: prompt,
       createdAt: Date.now(),
       status: "idle" as const,
     };
 
     addRoom(room);
     router.push(`/room/${room.id}`);
-  }, [addRoom, aiApiKey, aiModel, aiProvider, description, evaluationPrompt, folderResult, name, router, rubrics]);
+  }, [addRoom, aiApiKey, aiModel, aiProvider, description, evaluationPrompt, folderResult, name, router, rubrics, rubricSourceText]);
 
-  const isValid = Boolean(name.trim() && folderResult && rubrics.length > 0 && aiApiKey.trim() && !rubricParsing);
+  const isValid = Boolean(name.trim() && folderResult && rubrics.length > 0 && aiApiKey.trim() && !rubricParsing && !summarizing);
   const selectedProvider = AI_PROVIDERS.find((provider) => provider.value === aiProvider)!;
 
   return (
@@ -184,59 +238,6 @@ export default function CreateRoom() {
           </section>
 
           <section className="glass-card-elevated animate-fade-in space-y-4 p-6">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Rubrics</h2>
-            <div className="space-y-2">
-              <Label>Upload Rubric File *</Label>
-              <p className="mb-2 text-xs text-muted-foreground">
-                CSV, PDF, DOC, or DOCX. CSV can use columns{" "}
-                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">name</span>,{" "}
-                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">description</span> (optional),{" "}
-                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">maxScore</span> (optional, default 5). For PDF and Word
-                files, use a table or bullet list with criterion names and optional score ranges.
-              </p>
-              <label className="flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed border-border p-4 transition-colors hover:border-primary/50 hover:bg-secondary/50">
-                <Upload className="h-5 w-5 text-muted-foreground" />
-                <span className="text-sm text-muted-foreground">
-                  {rubricParsing ? "Parsing rubric file..." : rubricFileName || "Choose CSV, PDF, DOC, or DOCX file..."}
-                </span>
-                <input type="file" accept={RUBRIC_FILE_ACCEPT} className="hidden" onChange={handleRubricUpload} disabled={rubricParsing} />
-              </label>
-            </div>
-
-            {rubrics.length > 0 && (
-              <div className="space-y-2">
-                <p className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-                  <FileText className="h-4 w-4" /> {rubrics.length} criteria loaded
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {rubrics.map((rubric) => (
-                    <span key={rubric.name} className="rounded-full bg-primary/10 px-2.5 py-1 font-mono text-xs text-primary">
-                      {rubric.name} (1-{rubric.maxScore || 5})
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-
-          {evaluationPrompt && (
-            <section className="glass-card-elevated animate-fade-in space-y-4 p-6">
-              <h2 className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-foreground">
-                <Sparkles className="h-4 w-4 text-accent" /> Generated Evaluation Prompt
-              </h2>
-              <Textarea
-                value={evaluationPrompt}
-                onChange={(event) => setEvaluationPrompt(event.target.value)}
-                rows={10}
-                className="font-mono text-xs"
-              />
-              <p className="text-xs text-muted-foreground">
-                You can edit this prompt to fine-tune the evaluation criteria.
-              </p>
-            </section>
-          )}
-
-          <section className="glass-card-elevated animate-fade-in space-y-4 p-6">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">AI Model Provider</h2>
             <div className="grid grid-cols-2 gap-2">
               {AI_PROVIDERS.map((provider) => (
@@ -275,6 +276,84 @@ export default function CreateRoom() {
                 className="font-mono text-sm"
               />
             </div>
+          </section>
+
+          <section className="glass-card-elevated animate-fade-in space-y-4 p-6">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Rubrics</h2>
+            <div className="space-y-2">
+              <Label>Upload Rubric File *</Label>
+              <p className="mb-2 text-xs text-muted-foreground">
+                CSV, PDF, DOC, or DOCX. CSV can use columns{" "}
+                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">name</span>,{" "}
+                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">description</span> (optional),{" "}
+                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono">maxScore</span> (optional, default 5). For PDF and Word
+                files, use a table or bullet list with criterion names and optional score ranges.
+              </p>
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed border-border p-4 transition-colors hover:border-primary/50 hover:bg-secondary/50">
+                <Upload className="h-5 w-5 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">
+                  {rubricParsing ? "Parsing rubric file..." : rubricFileName || "Choose CSV, PDF, DOC, or DOCX file..."}
+                </span>
+                <input type="file" accept={RUBRIC_FILE_ACCEPT} className="hidden" onChange={handleRubricUpload} disabled={rubricParsing} />
+              </label>
+            </div>
+
+            {rubrics.length > 0 && (
+              <div className="space-y-2">
+                <p className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                  <FileText className="h-4 w-4" /> {rubrics.length} criteria loaded
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {rubrics.map((rubric) => (
+                    <span key={rubric.name} className="rounded-full bg-primary/10 px-2.5 py-1 font-mono text-xs text-primary">
+                      {rubric.name} (1-{rubric.maxScore || 5})
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {rubrics.length > 0 && (
+              <div className="space-y-2">
+                <Label className="flex items-center gap-1.5">
+                  <Sparkles className="h-4 w-4 text-accent" />
+                  Rubric Summary
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  AI-generated summary of your rubric criteria. Edit it to adjust what the evaluator should look for.
+                </p>
+                {summaryError && (
+                  <p className="flex items-center gap-1.5 text-sm text-destructive">
+                    <AlertCircle className="h-4 w-4" /> {summaryError}
+                  </p>
+                )}
+                <Textarea
+                  value={rubricSummary || ""}
+                  onChange={(event) => setRubricSummary(event.target.value)}
+                  placeholder={
+                    summarizing
+                      ? "Generating rubric summary..."
+                      : aiApiKey.trim()
+                        ? "Upload a rubric file to see the AI summary here..."
+                        : "Enter your API key above, then upload a rubric file."
+                  }
+                  rows={8}
+                  disabled={summarizing}
+                  className="text-sm leading-relaxed"
+                />
+                {rubricSummary && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => pendingSummarizeRef.current && doSummarize(rubricSourceText)}
+                    disabled={summarizing || !aiApiKey.trim()}
+                  >
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                    Regenerate Summary
+                  </Button>
+                )}
+              </div>
+            )}
           </section>
 
           <Button
