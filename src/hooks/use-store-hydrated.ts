@@ -4,16 +4,8 @@ import { useEffect, useState } from "react";
 
 import { useAppStore } from "@/stores/useAppStore";
 
-function getInitialHydrationState() {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  return useAppStore.persist?.hasHydrated() ?? false;
-}
-
 export function useStoreHydrated() {
-  const [hydrated, setHydrated] = useState(getInitialHydrationState);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     const persistApi = useAppStore.persist;
