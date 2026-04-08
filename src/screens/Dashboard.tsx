@@ -15,7 +15,7 @@ const statusConfig = {
   error: { label: "Error", className: "status-badge bg-destructive/10 text-destructive" },
 };
 
-const providerLabels = { openai: "OpenAI", claude: "Claude", gemini: "Gemini", openrouter: "OpenRouter" };
+const providerLabels = { openai: "OpenAI", claude: "Claude", gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq" };
 
 function RoomCard({ room }: { room: Room }) {
   const deleteRoom = useAppStore((state) => state.deleteRoom);

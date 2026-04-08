@@ -11,6 +11,7 @@ const PROVIDER_ENDPOINTS: Record<AIProvider, string> = {
   claude: 'https://api.anthropic.com/v1/messages',
   gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
   openrouter: 'https://openrouter.ai/api/v1/chat/completions',
+  groq: 'https://api.groq.com/openai/v1/chat/completions',
 };
 
 const DEFAULT_MODELS: Record<AIProvider, string> = {
@@ -18,6 +19,7 @@ const DEFAULT_MODELS: Record<AIProvider, string> = {
   claude: 'claude-sonnet-4-20250514',
   gemini: 'gemini-2.5-flash',
   openrouter: 'google/gemini-2.5-flash-preview',
+  groq: 'llama-3.3-70b-versatile',
 };
 
 export async function evaluateVideoTranscript(
@@ -33,7 +35,8 @@ export async function evaluateVideoTranscript(
 
   switch (config.provider) {
     case 'openai':
-    case 'openrouter': {
+    case 'openrouter':
+    case 'groq': {
       const endpoint = PROVIDER_ENDPOINTS[config.provider];
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -150,8 +153,24 @@ export async function extractTranscriptFromVideo(videoBlob: Blob, config: AIConf
     return data.text;
   }
 
+  // For Groq, use Whisper-large-v3 via OpenAI-compatible endpoint
+  if (config.provider === 'groq') {
+    const formData = new FormData();
+    formData.append('file', videoBlob, 'video.mp4');
+    formData.append('model', 'whisper-large-v3');
+
+    const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      body: formData,
+    });
+    if (!res.ok) throw new Error(`Transcription error: ${res.status} ${await res.text()}`);
+    const data = await res.json();
+    return data.text;
+  }
+
   // For others, try audio extraction then OpenRouter with Whisper-compatible endpoint
-  throw new Error(`Direct transcription not supported for ${config.provider}. Please use OpenAI or Gemini for auto-transcription.`);
+  throw new Error(`Direct transcription not supported for ${config.provider}. Please use OpenAI, Gemini, or Groq for auto-transcription.`);
 }
 
 function blobToBase64(blob: Blob): Promise<string> {

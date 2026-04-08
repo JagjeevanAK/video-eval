@@ -16,7 +16,7 @@ export async function POST(request: Request) {
 
     const { provider, apiKey, model, rubricText } = body;
 
-    if (!provider || !['openai', 'claude', 'gemini', 'openrouter'].includes(provider)) {
+    if (!provider || !['openai', 'claude', 'gemini', 'openrouter', 'groq'].includes(provider)) {
       return NextResponse.json({ error: 'Valid AI provider is required' }, { status: 400 });
     }
     if (!apiKey) {

@@ -21,6 +21,7 @@ const AI_PROVIDERS: { value: AIProvider; label: string; placeholder: string }[] 
   { value: "claude", label: "Claude (Anthropic)", placeholder: "sk-ant-..." },
   { value: "gemini", label: "Google Gemini", placeholder: "AIza..." },
   { value: "openrouter", label: "OpenRouter", placeholder: "sk-or-..." },
+  { value: "groq", label: "Groq", placeholder: "gsk_..." },
 ];
 
 export default function CreateRoom() {

@@ -1,4 +1,4 @@
-export type AIProvider = 'openai' | 'claude' | 'gemini' | 'openrouter';
+export type AIProvider = 'openai' | 'claude' | 'gemini' | 'openrouter' | 'groq';
 
 export interface RubricCriteria {
   name: string;

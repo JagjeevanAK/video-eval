@@ -5,6 +5,7 @@ const PROVIDER_ENDPOINTS: Record<AIProvider, string> = {
   claude: 'https://api.anthropic.com/v1/messages',
   gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
   openrouter: 'https://openrouter.ai/api/v1/chat/completions',
+  groq: 'https://api.groq.com/openai/v1/chat/completions',
 };
 
 const DEFAULT_MODELS: Record<AIProvider, string> = {
@@ -12,6 +13,7 @@ const DEFAULT_MODELS: Record<AIProvider, string> = {
   claude: 'claude-sonnet-4-20250514',
   gemini: 'gemini-2.5-flash',
   openrouter: 'google/gemini-2.5-flash-preview',
+  groq: 'llama-3.3-70b-versatile',
 };
 
 const SYSTEM_PROMPT = `You are given rubric criteria extracted from a teacher's assessment document.
@@ -40,7 +42,8 @@ export async function summarizeRubrics(req: SummarizeRequest): Promise<string> {
 
   switch (provider) {
     case 'openai':
-    case 'openrouter': {
+    case 'openrouter':
+    case 'groq': {
       const endpoint = PROVIDER_ENDPOINTS[provider];
       const res = await fetch(endpoint, {
         method: 'POST',
