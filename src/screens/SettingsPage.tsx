@@ -28,6 +28,13 @@ export default function SettingsPage() {
             <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs">NEXT_PUBLIC_GOOGLE_CLIENT_ID</span>{" "}
             environment variable.
           </p>
+          <p className="text-sm text-muted-foreground">
+            Google Drive folder picker uses{" "}
+            <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs">NEXT_PUBLIC_GOOGLE_PICKER_API_KEY</span>
+            {" "}and can optionally use{" "}
+            <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs">NEXT_PUBLIC_GOOGLE_APP_ID</span>
+            {" "}for the Google Cloud project number.
+          </p>
           <Button
             variant="outline"
             size="sm"

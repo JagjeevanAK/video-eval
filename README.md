@@ -13,7 +13,11 @@ Create a `.env.local` file with:
 
 ```bash
 NEXT_PUBLIC_GOOGLE_CLIENT_ID=your_google_oauth_client_id
+NEXT_PUBLIC_GOOGLE_PICKER_API_KEY=your_google_picker_browser_api_key
+NEXT_PUBLIC_GOOGLE_APP_ID=your_google_cloud_project_number
 ```
+
+`NEXT_PUBLIC_GOOGLE_APP_ID` is optional, but recommended when using the Google Drive picker.
 
 ## Development
 
