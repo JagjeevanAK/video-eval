@@ -250,25 +250,77 @@ export async function openDriveFolderPicker(options: {
 }): Promise<GoogleDriveFolder | null> {
   await loadGapiScript();
 
-  const pickerWidth = Math.min(window.innerWidth - 32, 960);
-  const pickerHeight = Math.min(window.innerHeight - 32, 650);
+  const pickerWidth = Math.min(window.innerWidth - 64, 1000);
+  const pickerHeight = Math.min(window.innerHeight * 0.8, 600);
+
+  const originalOverflow = document.body.style.overflow;
+  const originalPaddingRight = document.body.style.paddingRight;
+
+  const pickerStyleId = "google-picker-custom-styles";
+  
+  const lockBodyScroll = () => {
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = "hidden";
+    document.body.style.paddingRight = `${scrollbarWidth}px`;
+    
+    // Add custom styles to center the picker
+    if (!document.getElementById(pickerStyleId)) {
+      const style = document.createElement("style");
+      style.id = pickerStyleId;
+      style.textContent = `
+        .picker-dialog {
+          position: fixed !important;
+          top: 50% !important;
+          left: 50% !important;
+          transform: translate(-50%, -50%) !important;
+          margin: 0 !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  };
+
+  const unlockBodyScroll = () => {
+    document.body.style.overflow = originalOverflow;
+    document.body.style.paddingRight = originalPaddingRight;
+    
+    // Remove custom styles
+    const styleElement = document.getElementById(pickerStyleId);
+    if (styleElement) {
+      styleElement.remove();
+    }
+  };
+
+  lockBodyScroll();
 
   return new Promise<GoogleDriveFolder | null>((resolve, reject) => {
-    const foldersView = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
+    // View for browsing and selecting - shows both files and folders
+    const docsView = new window.google.picker.DocsView()
       .setIncludeFolders(true)
       .setSelectFolderEnabled(true);
 
+    const handleResolve = (result: GoogleDriveFolder | null) => {
+      unlockBodyScroll();
+      resolve(result);
+    };
+
+    const handleReject = (error: Error) => {
+      unlockBodyScroll();
+      reject(error);
+    };
+
     const pickerBuilder = new window.google.picker.PickerBuilder()
-      .addView(foldersView)
+      .addView(docsView)
       .setDeveloperKey(options.developerKey)
       .setOAuthToken(options.accessToken)
+      .setOrigin(window.location.protocol + "//" + window.location.host)
       .setSize(pickerWidth, pickerHeight)
       .setTitle("Select a Google Drive folder")
       .setCallback((data) => {
         const action = data[window.google.picker.Response.ACTION];
 
         if (action === window.google.picker.Action.CANCEL) {
-          resolve(null);
+          handleResolve(null);
           return;
         }
 
@@ -280,11 +332,11 @@ export async function openDriveFolderPicker(options: {
         const [selectedFolder] = Array.isArray(documents) ? (documents as GooglePickerDocumentData[]) : [];
 
         if (!selectedFolder?.id || !selectedFolder?.name) {
-          reject(new Error("Google Picker did not return a valid folder selection"));
+          handleReject(new Error("Google Picker did not return a valid folder selection"));
           return;
         }
 
-        resolve({
+        handleResolve({
           id: selectedFolder.id,
           name: selectedFolder.name,
         });
@@ -325,7 +377,7 @@ export async function searchDriveFolder(folderName: string, accessToken: string)
 export async function listVideosInFolder(folderId: string, accessToken: string): Promise<GoogleDriveVideoFile[]> {
   const q = `'${folderId}' in parents and (mimeType contains 'video/') and trashed=false`;
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,webViewLink)&pageSize=100&includeItemsFromAllDrives=true&supportsAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,webViewLink)&pageSize=100&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=allDrives`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
 

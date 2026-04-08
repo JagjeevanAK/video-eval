@@ -196,7 +196,7 @@ export default function CreateRoom() {
             <div className="space-y-2">
               <Label>Folder *</Label>
               <p className="text-xs text-muted-foreground">
-                Choose a folder from My Drive, Shared with me, or shared drives using Google&apos;s picker.
+                Choose a folder from My Drive, Shared with me, or shared drives using Google&apos;s picker. The picker shows folders only—videos inside will load after selection.
               </p>
               <Button variant="outline" onClick={handlePickFolder} disabled={folderPicking}>
                 <FolderSearch className="mr-1.5 h-4 w-4" />
@@ -229,7 +229,7 @@ export default function CreateRoom() {
                 {folderVideosLoading ? (
                   <p className="text-sm text-muted-foreground">Loading videos from Google Drive...</p>
                 ) : folderVideos.length > 0 ? (
-                  <ScrollArea className="h-48 rounded-lg border border-border/60 bg-background/70">
+                  <ScrollArea className="max-h-64 rounded-lg border border-border/60 bg-background/70">
                     <div className="space-y-2 p-3">
                       {folderVideos.map((video) => (
                         <div key={video.id} className="flex items-center gap-3 rounded-lg border border-border/50 bg-card/80 px-3 py-2">
