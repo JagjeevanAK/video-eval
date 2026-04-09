@@ -30,6 +30,7 @@ export interface VideoFile {
   webViewLink?: string;
   status: 'pending' | 'processing' | 'completed' | 'error';
   scores?: Record<string, number>;
+  descriptions?: Record<string, string>;
   error?: string;
 }
 

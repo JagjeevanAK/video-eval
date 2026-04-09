@@ -6,6 +6,11 @@ interface AIConfig {
   model?: string;
 }
 
+export interface EvaluationResult {
+  scores: Record<string, number>;
+  descriptions: Record<string, string>;
+}
+
 const PROVIDER_ENDPOINTS: Record<AIProvider, string> = {
   openai: 'https://api.openai.com/v1/chat/completions',
   claude: 'https://api.anthropic.com/v1/messages',
@@ -27,7 +32,7 @@ export async function evaluateVideoTranscript(
   evaluationPrompt: string,
   config: AIConfig,
   rubrics: RubricCriteria[]
-): Promise<Record<string, number>> {
+): Promise<EvaluationResult> {
   const model = config.model || DEFAULT_MODELS[config.provider];
   const userMessage = `Here is the video transcript to evaluate:\n\n${transcript}`;
 
@@ -69,7 +74,7 @@ export async function evaluateVideoTranscript(
         },
         body: JSON.stringify({
           model,
-          max_tokens: 1024,
+          max_tokens: 2048,
           system: evaluationPrompt,
           messages: [{ role: 'user', content: userMessage }],
         }),
@@ -101,15 +106,20 @@ export async function evaluateVideoTranscript(
   // Parse JSON from response
   const jsonMatch = responseText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('No JSON found in AI response');
-  const scores = JSON.parse(jsonMatch[0]);
+  const parsed = JSON.parse(jsonMatch[0]);
+
+  // Handle both new format (with scores/descriptions) and legacy flat format
+  const scoresRaw = parsed.scores || parsed;
+  const descriptionsRaw = parsed.descriptions || {};
 
   // Validate scores
-  const result: Record<string, number> = {};
+  const scores: Record<string, number> = {};
+  const descriptions: Record<string, string> = {};
   for (const rubric of rubrics) {
-    const score = scores[rubric.name];
-    result[rubric.name] = typeof score === 'number' ? score : 0;
+    scores[rubric.name] = typeof scoresRaw[rubric.name] === 'number' ? scoresRaw[rubric.name] : 0;
+    descriptions[rubric.name] = typeof descriptionsRaw[rubric.name] === 'string' ? descriptionsRaw[rubric.name] : '';
   }
-  return result;
+  return { scores, descriptions };
 }
 
 export async function extractTranscriptFromVideo(videoBlob: Blob, config: AIConfig): Promise<string> {

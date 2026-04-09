@@ -365,11 +365,16 @@ export function generateEvaluationPrompt(rubrics: RubricCriteria[], sourceText?:
 
 ${criteriaList}
 ${contextSection}
-For each criterion, provide a numeric score within the specified range. Use the uploaded rubric context when it adds detail, but keep the response aligned to the exact criterion names above. Be fair, objective, and consistent.
+For each criterion, provide a numeric score within the specified range AND a concise explanation (1-2 sentences) for why that score was given. Reference specific moments or aspects from the transcript that influenced the score. Be fair, objective, and consistent.
 
 Respond ONLY with a valid JSON object in this exact format:
 {
-${rubrics.map((rubric) => `  "${rubric.name}": <score>`).join(",\n")}
+  "scores": {
+${rubrics.map((rubric) => `    "${rubric.name}": <score>`).join(",\n")}
+  },
+  "descriptions": {
+${rubrics.map((rubric) => `    "${rubric.name}": "<brief explanation>"`).join(",\n")}
+  }
 }
 
 Do not include any text outside the JSON object.`;

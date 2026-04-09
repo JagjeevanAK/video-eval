@@ -57,7 +57,7 @@ Technical Depth    Problem solving and tradeoffs    10
 });
 
 describe("generateEvaluationPrompt", () => {
-  it("includes each rubric and enforces a JSON-only response", () => {
+  it("includes each rubric and enforces a JSON-only response with scores and descriptions", () => {
     const prompt = generateEvaluationPrompt(
       [
         { name: "Communication", description: "Clarity and confidence", maxScore: 10 },
@@ -68,9 +68,13 @@ describe("generateEvaluationPrompt", () => {
 
     expect(prompt).toContain("Communication");
     expect(prompt).toContain("Technical Depth");
+    expect(prompt).toContain('"scores"');
+    expect(prompt).toContain('"descriptions"');
     expect(prompt).toContain("\"Communication\": <score>");
     expect(prompt).toContain("\"Technical Depth\": <score>");
+    expect(prompt).toContain("\"Communication\": \"<brief explanation>\"");
     expect(prompt).toContain("Additional rubric context");
     expect(prompt).toContain("Respond ONLY with a valid JSON object");
+    expect(prompt).toContain("concise explanation");
   });
 });
