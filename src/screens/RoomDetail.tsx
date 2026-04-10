@@ -29,6 +29,7 @@ import {
   appendToSheet,
   createSpreadsheet,
   downloadFileAsBlob,
+  getSheetValues,
   listVideosInFolder,
   moveFileToFolder,
   getEvaluatedVideos,
@@ -156,6 +157,20 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
 
       const pendingVideos = videos.filter((video) => video.status === "pending" || video.status === "error");
 
+      // Get the current row count to determine the starting Sr. number
+      let startingSrNumber = 1;
+      if (spreadsheetId) {
+        try {
+          const existingRows = await getSheetValues(spreadsheetId, "Evaluations!A:A", auth.accessToken);
+          // Subtract 1 for the header row
+          startingSrNumber = Math.max(1, existingRows.length);
+          addLog(`Starting from Sr. ${startingSrNumber} (${existingRows.length - 1} existing entries)`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to read existing rows, starting from 1";
+          addLog(`Warning: ${message}`);
+        }
+      }
+
       for (let index = 0; index < pendingVideos.length; index += 1) {
         const video = pendingVideos[index];
         setCurrentIndex(index);
@@ -263,7 +278,7 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
 
           const videoTitle = video.name.replace(/\.[^/.]+$/, "");
           const row = [
-            index + 1,
+            startingSrNumber + index,
             videoTitle,
             clipDefs.length,
             ...room.rubrics.map((rubric) => averagedScores[rubric.name] || 0),
