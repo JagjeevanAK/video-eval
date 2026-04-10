@@ -22,12 +22,10 @@ async function appendToFile(formatted: string): Promise<void> {
   try {
     // Dynamic import to avoid bundling fs in client bundle
     if (typeof window === 'undefined') {
-      // @ts-expect-error - dynamic import in server-only context
       const fs = await import('fs');
-      // @ts-expect-error - dynamic import in server-only context
       const path = await import('path');
-      const fullPath = path.join(process.cwd(), LOG_FILE);
-      fs.appendFileSync(fullPath, formatted, 'utf8');
+      const fullPath = path.default.join(process.cwd(), LOG_FILE);
+      fs.default.appendFileSync(fullPath, formatted, 'utf8');
     }
   } catch (err) {
     // Silently fail if file system is not accessible
