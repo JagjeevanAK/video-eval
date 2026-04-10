@@ -371,7 +371,7 @@ ${criteriaList}
 ${contextSection}
 For each criterion, consider BOTH the transcript (spoken content, keywords, discussion topics) AND the screenshot (visual elements, presentation style, engagement indicators, body language if visible, slides/content being shown).
 
-Provide a numeric score within the specified range AND a concise explanation (1-2 sentences) for why that score was given. Reference specific moments from the transcript or visual elements from the screenshot that influenced the score. Be fair, objective, and consistent.
+Provide a numeric score within the specified range AND a very brief explanation (one short sentence max) for why that score was given. Be concise — mention only the key reason for the score. Be fair, objective, and consistent.
 
 Respond ONLY with a valid JSON object in this exact format:
 {
@@ -379,7 +379,7 @@ Respond ONLY with a valid JSON object in this exact format:
 ${rubrics.map((rubric) => `    "${rubric.name}": <score>`).join(",\n")}
   },
   "descriptions": {
-${rubrics.map((rubric) => `    "${rubric.name}": "<brief explanation>"`).join(",\n")}
+${rubrics.map((rubric) => `    "${rubric.name}": "<one short sentence>"`).join(",\n")}
   }
 }
 

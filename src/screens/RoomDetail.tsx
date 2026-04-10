@@ -21,6 +21,7 @@ import {
   extractTranscriptFromVideo,
   evaluateClipWithScreenshot,
   averageClipScores,
+  summarizeClipDescriptions,
   type EvaluationResult,
 } from "@/lib/aiEvaluator";
 import { extractClipsFromVideo } from "@/lib/videoProcessor";
@@ -218,23 +219,41 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
           addLog("  Averaging scores from all clips...");
           const { averagedScores, averagedDescriptions } = averageClipScores(clipResults, room.rubrics);
 
+          // Generate AI-summarized descriptions (one concise sentence per rubric)
+          addLog("  Generating evaluation summaries...");
+          const summaryConfig = { provider: room.aiProvider, apiKey: room.aiApiKey, model: room.aiModel };
+          const summarizedDescriptions: Record<string, string> = {};
+          for (const rubric of room.rubrics) {
+            try {
+              summarizedDescriptions[rubric.name] = await summarizeClipDescriptions(
+                rubric.name,
+                clipResults,
+                averagedScores[rubric.name] || 0,
+                summaryConfig,
+              );
+            } catch (err) {
+              // Fallback to empty if summarization fails
+              summarizedDescriptions[rubric.name] = '';
+            }
+          }
+
           updateVideo(room.id, video.id, {
             status: "completed",
             scores: averagedScores,
-            descriptions: averagedDescriptions,
+            descriptions: summarizedDescriptions,
             clipEvaluationResults: clipResults,
             averagedScores,
-            averagedDescriptions,
+            averagedDescriptions: summarizedDescriptions,
           });
 
-          // Build combined description
+          // Build combined description for the sheet: one sentence per rubric explaining the score
           const combinedDescription = room.rubrics
             .map((rubric) => {
-              const desc = averagedDescriptions[rubric.name];
+              const desc = summarizedDescriptions[rubric.name];
               return desc ? `${rubric.name}: ${desc}` : null;
             })
             .filter(Boolean)
-            .join("; ");
+            .join(" ");
 
           // Calculate total marks (sum of all rubric scores)
           const totalMarks = room.rubrics.reduce(
