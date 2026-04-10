@@ -28,7 +28,7 @@ const DEFAULT_MODELS: Record<AIProvider, string> = {
   claude: 'claude-sonnet-4-20250514',
   gemini: 'gemini-2.5-flash',
   openrouter: 'google/gemini-2.5-flash-preview',
-  groq: 'llama-3.3-70b-versatile',
+  groq: 'meta-llama/llama-4-scout-17b-16e-instruct',
 };
 
 export async function evaluateVideoTranscript(
@@ -309,9 +309,14 @@ export async function evaluateClipWithScreenshot(
       break;
     }
     case 'groq': {
-      // Groq doesn't support vision, use text only
       const endpoint = PROVIDER_ENDPOINTS[config.provider];
-      const fullMessage = `${userMessage}\n\n[Screenshot was captured for this clip but cannot be processed by Groq. Please evaluate based on the transcript only.]`;
+      const contentParts: Array<Record<string, unknown>> = [
+        { type: 'text', text: userMessage },
+        {
+          type: 'image_url',
+          image_url: { url: `data:${screenshotMimeType};base64,${screenshotBase64}` },
+        },
+      ];
 
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -323,9 +328,10 @@ export async function evaluateClipWithScreenshot(
           model,
           messages: [
             { role: 'system', content: evaluationPrompt },
-            { role: 'user', content: fullMessage },
+            { role: 'user', content: contentParts },
           ],
           temperature: 0.3,
+          max_tokens: 2048,
         }),
       });
       if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
