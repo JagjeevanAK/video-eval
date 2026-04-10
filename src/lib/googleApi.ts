@@ -487,6 +487,61 @@ export async function appendToSheet(
   }
 }
 
+export async function getSheetValues(
+  spreadsheetId: string,
+  range: string,
+  accessToken: string,
+): Promise<(string | number)[][]> {
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+
+  if (!res.ok) {
+    throw new Error(await getGoogleApiError(res, "Failed to read Google Sheet"));
+  }
+
+  const data = await res.json();
+  return data.values || [];
+}
+
+export interface EvaluatedVideoInfo {
+  name: string;
+  clipsEvaluated: number;
+  scores: Record<string, number>;
+  descriptions: Record<string, string>;
+  totalMarks: number;
+}
+
+export async function getEvaluatedVideos(
+  spreadsheetId: string,
+  rubricNames: string[],
+  accessToken: string,
+): Promise<EvaluatedVideoInfo[]> {
+  const values = await getSheetValues(spreadsheetId, "Evaluations!A:Z", accessToken);
+
+  // Skip header row
+  const dataRows = values.slice(1);
+
+  return dataRows
+    .map((row) => {
+      // Row format: [Sr., Name, Clips Evaluated, ...rubricScores, TOTAL MARKS, Description]
+      const name = String(row[1] || "");
+      const clipsEvaluated = Number(row[2]) || 0;
+      const totalMarks = Number(row[row.length - 2]) || 0;
+      const description = String(row[row.length - 1] || "");
+
+      // Extract rubric scores (columns 3 to 3 + rubricNames.length - 1)
+      const scores: Record<string, number> = {};
+      rubricNames.forEach((rubricName, index) => {
+        scores[rubricName] = Number(row[3 + index]) || 0;
+      });
+
+      return { name, clipsEvaluated, scores, descriptions: { Description: description }, totalMarks };
+    })
+    .filter((info) => info.name && info.clipsEvaluated > 0);
+}
+
 export async function moveFileToFolder(spreadsheetId: string, folderId: string, accessToken: string): Promise<void> {
   const res = await fetch(
     `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=parents&supportsAllDrives=true`,

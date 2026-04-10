@@ -30,6 +30,7 @@ import {
   downloadFileAsBlob,
   listVideosInFolder,
   moveFileToFolder,
+  getEvaluatedVideos,
 } from "@/lib/googleApi";
 import { useAppStore } from "@/stores/useAppStore";
 import type { VideoFile, ClipEvaluationResult } from "@/types";
@@ -68,14 +69,52 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
 
     try {
       const files = await listVideosInFolder(room.driveFolderId, auth.accessToken);
-      const mapped: VideoFile[] = files.map((file: VideoFile) => ({
-        id: file.id,
-        name: file.name,
-        mimeType: file.mimeType,
-        size: file.size,
-        webViewLink: file.webViewLink,
-        status: "pending" as const,
-      }));
+
+      // If the room has a spreadsheet, read evaluated videos from it
+      const evaluatedMap = new Map<string, { clipsEvaluated: number; scores: Record<string, number>; descriptions: Record<string, string> }>();
+      if (room.spreadsheetId) {
+        try {
+          const rubricNames = room.rubrics.map((r) => r.name);
+          const evaluatedVideos = await getEvaluatedVideos(room.spreadsheetId, rubricNames, auth.accessToken);
+          for (const ev of evaluatedVideos) {
+            evaluatedMap.set(ev.name, { clipsEvaluated: ev.clipsEvaluated, scores: ev.scores, descriptions: ev.descriptions });
+          }
+          addLog(`Restored ${evaluatedVideos.length} evaluated video(s) from spreadsheet`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to read spreadsheet";
+          addLog(`Warning: ${message}`);
+        }
+      }
+
+      const mapped: VideoFile[] = files.map((file: VideoFile) => {
+        const baseName = file.name.replace(/\.[^/.]+$/, ""); // Remove extension
+        const evaluated = evaluatedMap.get(baseName);
+
+        if (evaluated) {
+          return {
+            id: file.id,
+            name: file.name,
+            mimeType: file.mimeType,
+            size: file.size,
+            webViewLink: file.webViewLink,
+            status: "completed" as const,
+            scores: evaluated.scores,
+            descriptions: evaluated.descriptions,
+            clipEvaluationResults: [], // We don't store individual clip results in the sheet
+            averagedScores: evaluated.scores,
+            averagedDescriptions: evaluated.descriptions,
+          };
+        }
+
+        return {
+          id: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          size: file.size,
+          webViewLink: file.webViewLink,
+          status: "pending" as const,
+        };
+      });
 
       setRoomVideos(room.id, mapped);
       addLog(`Found ${mapped.length} video(s) in folder`);
