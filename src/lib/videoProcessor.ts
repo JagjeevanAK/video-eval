@@ -3,6 +3,122 @@ import type { VideoClip } from '@/types';
 const CLIP_DURATION_SEC = 30;
 
 /**
+ * Split a large video blob into smaller chunks of approximately `maxChunkSizeMB` each.
+ * Uses MediaRecorder to record segments from the video element.
+ */
+export async function splitVideoIntoChunks(
+  videoBlob: Blob,
+  maxChunkSizeMB: number = 25,
+): Promise<Blob[]> {
+  const duration = await getVideoDuration(videoBlob);
+  const totalBytes = videoBlob.size;
+  const maxChunkBytes = maxChunkSizeMB * 1024 * 1024;
+
+  // Estimate how many chunks we need based on file size ratio
+  const estimatedChunks = Math.ceil(totalBytes / maxChunkBytes);
+  // Ensure at least 2 chunks, and add some headroom (1.5x safety factor)
+  const numChunks = Math.max(2, Math.ceil(estimatedChunks * 1.5));
+  const chunkDuration = duration / numChunks;
+
+  console.log(`[VideoChunker] Video: ${(totalBytes / (1024 * 1024)).toFixed(2)} MB, ${duration.toFixed(1)}s`);
+  console.log(`[VideoChunker] Splitting into ${numChunks} chunks of ~${chunkDuration.toFixed(1)}s each`);
+
+  const chunks: Blob[] = [];
+  const url = URL.createObjectURL(videoBlob);
+
+  for (let i = 0; i < numChunks; i++) {
+    const start = i * chunkDuration;
+    const end = Math.min((i + 1) * chunkDuration, duration);
+
+    console.log(`[VideoChunker] Recording chunk ${i + 1}/${numChunks}: ${start.toFixed(1)}s - ${end.toFixed(1)}s`);
+    const chunkBlob = await recordVideoSegment(url, start, end);
+    chunks.push(chunkBlob);
+
+    const chunkSizeMB = (chunkBlob.size / (1024 * 1024)).toFixed(2);
+    console.log(`[VideoChunker] Chunk ${i + 1} size: ${chunkSizeMB} MB`);
+  }
+
+  URL.revokeObjectURL(url);
+  return chunks;
+}
+
+/**
+ * Record a specific time segment from a video URL using MediaRecorder
+ */
+function recordVideoSegment(
+  videoUrl: string,
+  startTime: number,
+  endTime: number,
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.preload = 'auto';
+    video.muted = true;
+    video.playsInline = true;
+    video.src = videoUrl;
+
+    const duration = endTime - startTime;
+    let mediaRecorder: MediaRecorder | null = null;
+    const chunks: Blob[] = [];
+
+    video.onloadedmetadata = () => {
+      video.currentTime = startTime;
+    };
+
+    video.onseeked = () => {
+      // Start recording from this position
+      try {
+        const videoEl = video as HTMLVideoElement & { captureStream?: () => MediaStream; mozCaptureStream?: () => MediaStream };
+        const stream = videoEl.captureStream
+          ? videoEl.captureStream()
+          : videoEl.mozCaptureStream?.();
+
+        if (!stream) {
+          reject(new Error('Video captureStream not supported'));
+          return;
+        }
+
+        mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'video/webm;codecs=vp9',
+          videoBitsPerSecond: 2_500_000, // 2.5 Mbps to keep file size reasonable
+        });
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          video.pause();
+          resolve(blob);
+        };
+
+        mediaRecorder.onerror = (e) => {
+          reject(new Error(`MediaRecorder error: ${(e as ErrorEvent).message}`));
+        };
+
+        mediaRecorder.start();
+        video.play();
+
+        // Stop recording after the segment duration
+        setTimeout(() => {
+          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+          }
+          video.pause();
+        }, (duration + 0.5) * 1000); // Add 0.5s buffer
+      } catch (err) {
+        reject(err);
+      }
+    };
+
+    video.onerror = () => {
+      reject(new Error('Failed to load video for chunking'));
+    };
+  });
+}
+
+/**
  * Extract video duration using HTMLVideoElement
  */
 function getVideoDuration(file: File | Blob): Promise<number> {

@@ -5,6 +5,7 @@ import { extname, join } from "node:path";
 import { NextResponse } from "next/server";
 
 import { extractRubricsFromText, parseRubricsFromCSVText } from "@/lib/rubricParser";
+import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -28,26 +29,26 @@ function sanitizeFileName(fileName: string): string {
 }
 
 async function extractTextFromPdf(buffer: Buffer): Promise<string> {
-  console.log("[PDF2JSON] Starting PDF extraction, buffer length:", buffer.length);
+  logger.info("PDF2JSON", "Starting PDF extraction", { bufferLength: buffer.length });
 
   const PDFParser = (await import("pdf2json")).default;
   const pdfParser = new PDFParser();
 
   const text = await new Promise<string>((resolve, reject) => {
     pdfParser.on("pdfParser_dataError", (err) => {
-      console.error("[PDF2JSON] Data error:", err);
+      logger.error("PDF2JSON", "Data error", err);
       reject(err);
     });
     pdfParser.on("pdfParser_dataReady", () => {
-      console.log("[PDF2JSON] Data ready, attempting raw text extraction");
+      logger.info("PDF2JSON", "Data ready, attempting raw text extraction");
       const extracted = pdfParser.getRawTextContent();
-      console.log("[PDF2JSON] Raw text length:", extracted?.length);
+      logger.info("PDF2JSON", "Raw text length", { length: extracted?.length });
       resolve(extracted || "");
     });
     pdfParser.parseBuffer(buffer);
   });
 
-  console.log("[PDF2JSON] Final extracted text length:", text.length);
+  logger.info("PDF2JSON", "Final extracted text length", { length: text.length });
 
   if (text.length > 0) {
     return normalizeExtractedText(text);
@@ -55,7 +56,7 @@ async function extractTextFromPdf(buffer: Buffer): Promise<string> {
 
   // No text extracted - PDF likely contains images (screenshots/scans)
   // Use OCR to extract text
-  console.log("[PDF OCR] No text layer found, starting OCR extraction...");
+  logger.info("PDF OCR", "No text layer found, starting OCR extraction");
   return extractTextFromPdfWithOCR(buffer);
 }
 
@@ -70,14 +71,14 @@ async function extractTextFromPdfWithOCR(buffer: Buffer): Promise<string> {
     await fs.mkdir(outputDir, { recursive: true });
 
     // Convert PDF pages to images using pdftoppm (from poppler-utils)
-    console.log("[PDF OCR] Converting PDF to images...");
+    logger.info("PDF OCR", "Converting PDF to images");
     const { exec } = await import("node:child_process");
     const convertResult = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
       exec(
         `pdftoppm -png -r 300 "${pdfPath}" "${join(outputDir, "page")}"`,
         (error, stdout, stderr) => {
           if (error) {
-            console.error("[PDF OCR] pdftoppm error:", error.message);
+            logger.error("PDF OCR", "pdftoppm error", { message: error.message });
             reject(error);
           } else {
             resolve({ stdout, stderr });
@@ -85,7 +86,7 @@ async function extractTextFromPdfWithOCR(buffer: Buffer): Promise<string> {
         },
       );
     });
-    console.log("[PDF OCR] pdftoppm completed. stderr:", convertResult.stderr);
+    logger.info("PDF OCR", "pdftoppm completed", { stderr: convertResult.stderr });
 
     // Read all generated page images
     const files = await fs.readdir(outputDir);
@@ -94,24 +95,24 @@ async function extractTextFromPdfWithOCR(buffer: Buffer): Promise<string> {
       .sort()
       .map((f) => join(outputDir, f));
 
-    console.log("[PDF OCR] Converted PDF to", pageImages.length, "images");
+    logger.info("PDF OCR", "Converted PDF to images", { count: pageImages.length });
 
     if (pageImages.length === 0) {
-      console.log("[PDF OCR] No images generated from PDF");
+      logger.warn("PDF OCR", "No images generated from PDF");
       return "";
     }
 
     // Check image file sizes
     for (const img of pageImages) {
       const stats = await fs.stat(img);
-      console.log(`[PDF OCR] Image ${img} size: ${stats.size} bytes`);
+      logger.debug("PDF OCR", "Image file size", { image: img, size: stats.size });
     }
 
     // Run OCR on each page using tesseract CLI
     const pageTexts: string[] = [];
 
     for (let i = 0; i < pageImages.length; i++) {
-      console.log(`[PDF OCR] Processing page ${i + 1}/${pageImages.length}...`);
+      logger.info("PDF OCR", "Processing page", { page: i + 1, total: pageImages.length });
       const imagePath = pageImages[i];
       const outputPath = imagePath.replace(".png", "");
 
@@ -133,7 +134,7 @@ async function extractTextFromPdfWithOCR(buffer: Buffer): Promise<string> {
           `tesseract "${processedImagePath}" "${outputPath}" -l eng --psm 6`,
           (error, stdout, stderr) => {
             if (error) {
-              console.error(`[PDF OCR] Tesseract error on page ${i + 1}:`, error.message);
+              logger.error("PDF OCR", "Tesseract error on page", { page: i + 1, message: error.message });
               reject(error);
             } else {
               resolve({ stdout, stderr });
@@ -141,28 +142,28 @@ async function extractTextFromPdfWithOCR(buffer: Buffer): Promise<string> {
           },
         );
       });
-      console.log(`[PDF OCR] Tesseract page ${i + 1} stderr:`, tesseractResult.stderr);
+      logger.debug("PDF OCR", "Tesseract page completed", { page: i + 1, stderr: tesseractResult.stderr });
 
       // Read the extracted text file
       const textFilePath = `${outputPath}.txt`;
       const textFileExists = await fs.access(textFilePath).then(() => true).catch(() => false);
-      console.log(`[PDF OCR] Text file exists: ${textFileExists}`, textFilePath);
+      logger.debug("PDF OCR", "Text file status", { page: i + 1, exists: textFileExists, path: textFilePath });
 
       if (!textFileExists) {
-        console.error(`[PDF OCR] Text file not created for page ${i + 1}`);
+        logger.error("PDF OCR", "Text file not created for page", { page: i + 1 });
         continue;
       }
 
       const text = await fs.readFile(textFilePath, "utf-8");
-      console.log(`[PDF OCR] Page ${i + 1} extracted ${text.length} characters`);
+      logger.debug("PDF OCR", "Page text extracted", { page: i + 1, length: text.length });
       if (text.length < 100) {
-        console.log(`[PDF OCR] Page ${i + 1} first 100 chars:`, text.substring(0, 100));
+        logger.debug("PDF OCR", "Page text preview", { page: i + 1, preview: text.substring(0, 100) });
       }
       pageTexts.push(text);
     }
 
     const combinedText = pageTexts.join("\n\n");
-    console.log("[PDF OCR] Total OCR text extracted:", combinedText.length);
+    logger.info("PDF OCR", "Total OCR text extracted", { length: combinedText.length });
 
     return normalizeExtractedText(combinedText);
   } finally {
@@ -223,15 +224,17 @@ async function extractTextFromFile(extension: string, buffer: Buffer, fileName: 
 
 export async function POST(request: Request) {
   try {
+    logger.info("RubricParse", "POST request received");
     const formData = await request.formData();
     const fileEntry = formData.get("file");
 
     if (!(fileEntry instanceof File)) {
+      logger.warn("RubricParse", "No file provided");
       return NextResponse.json({ error: "A rubric file is required." }, { status: 400 });
     }
 
     const extension = getFileExtension(fileEntry.name);
-    console.log("[PDF Parse] File extension:", extension);
+    logger.info("RubricParse", "File extension detected", { extension });
 
     if (!SUPPORTED_EXTENSIONS.has(extension)) {
       return NextResponse.json(
@@ -241,31 +244,34 @@ export async function POST(request: Request) {
     }
 
     const buffer = Buffer.from(await fileEntry.arrayBuffer());
-    console.log("[PDF Parse] Buffer size:", buffer.length);
+    logger.info("RubricParse", "Buffer size", { size: buffer.length });
 
     if (extension === "csv") {
       const csvText = buffer.toString("utf8");
       const rubrics = parseRubricsFromCSVText(csvText);
 
       if (rubrics.length === 0) {
+        logger.warn("RubricParse", "No rubric criteria found in CSV");
         return NextResponse.json(
           { error: "No rubric criteria were found in the CSV. Include a name column or a first column with criterion names." },
           { status: 422 },
         );
       }
 
+      logger.info("RubricParse", "CSV rubric parsed", { count: rubrics.length });
       return NextResponse.json({ rubrics });
     }
 
-    console.log("[PDF Parse] Extracting text from file...");
+    logger.info("RubricParse", "Extracting text from file");
     const sourceText = await extractTextFromFile(extension, buffer, fileEntry.name);
-    console.log("[PDF Parse] Source text extracted, length:", sourceText.length);
+    logger.info("RubricParse", "Source text extracted", { length: sourceText.length });
 
-    console.log("[PDF Parse] Extracting rubrics from text...");
+    logger.info("RubricParse", "Extracting rubrics from text");
     const rubrics = extractRubricsFromText(sourceText);
-    console.log("[PDF Parse] Rubrics extracted:", rubrics.length);
+    logger.info("RubricParse", "Rubrics extracted", { count: rubrics.length });
 
     if (rubrics.length === 0) {
+      logger.warn("RubricParse", "No rubric criteria extracted");
       return NextResponse.json(
         {
           error:
@@ -275,12 +281,13 @@ export async function POST(request: Request) {
       );
     }
 
+    logger.info("RubricParse", "Rubric parsing completed successfully", { rubricCount: rubrics.length });
     return NextResponse.json({
       rubrics,
       sourceText: sourceText.slice(0, 6000),
     });
   } catch (error) {
-    console.error("[PDF Parse] Error:", error);
+    logger.error("RubricParse", "Error during rubric parsing", error);
     const message = error instanceof Error ? error.message : "Failed to parse rubric file.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
