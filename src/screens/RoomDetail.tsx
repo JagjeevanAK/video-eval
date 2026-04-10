@@ -16,6 +16,18 @@ import {
 
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   evaluateVideoTranscript,
   extractTranscriptFromVideo,
@@ -24,6 +36,7 @@ import {
   summarizeClipDescriptions,
   type EvaluationResult,
 } from "@/lib/aiEvaluator";
+import { hasApiKey } from "@/lib/apiKeyResolver";
 import { extractClipsFromVideo } from "@/lib/videoProcessor";
 import {
   appendToSheet,
@@ -35,7 +48,7 @@ import {
   getEvaluatedVideos,
 } from "@/lib/googleApi";
 import { useAppStore } from "@/stores/useAppStore";
-import type { VideoFile, ClipEvaluationResult } from "@/types";
+import type { AIProvider, VideoFile, ClipEvaluationResult } from "@/types";
 
 interface RoomDetailProps {
   roomId: string;
@@ -57,6 +70,17 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
   const [processing, setProcessing] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [log, setLog] = useState<string[]>([]);
+  const [showApiKeyPrompt, setShowApiKeyPrompt] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<AIProvider>(room?.aiProvider || "gemini");
+  const [enteredApiKey, setEnteredApiKey] = useState("");
+
+  const PROVIDERS: { value: AIProvider; label: string; placeholder: string }[] = [
+    { value: "openai", label: "OpenAI", placeholder: "sk-..." },
+    { value: "claude", label: "Claude (Anthropic)", placeholder: "sk-ant-..." },
+    { value: "gemini", label: "Google Gemini", placeholder: "AIza..." },
+    { value: "openrouter", label: "OpenRouter", placeholder: "sk-or-..." },
+    { value: "groq", label: "Groq", placeholder: "gsk_..." },
+  ];
 
   const addLog = useCallback((message: string) => {
     setLog((previous) => [...previous, `[${new Date().toLocaleTimeString()}] ${message}`]);
@@ -135,6 +159,31 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
   }, [loadVideos, room, videos.length]);
 
   const processVideos = useCallback(async () => {
+    if (!room || !auth.accessToken || processing) {
+      return;
+    }
+
+    // Check if API key is available
+    if (!hasApiKey(room.aiProvider, room.aiApiKey)) {
+      setSelectedProvider(room.aiProvider);
+      setEnteredApiKey("");
+      setShowApiKeyPrompt(true);
+      return;
+    }
+
+    startEvaluation();
+  }, [addLog, auth.accessToken, processing, room, updateRoom, updateVideo, videos]);
+
+  const handleApiKeySubmit = useCallback(() => {
+    if (!enteredApiKey.trim()) {
+      return;
+    }
+    updateRoom(room!.id, { aiProvider: selectedProvider, aiApiKey: enteredApiKey.trim() });
+    setShowApiKeyPrompt(false);
+    startEvaluation();
+  }, [enteredApiKey, selectedProvider, room, updateRoom]);
+
+  const startEvaluation = useCallback(async () => {
     if (!room || !auth.accessToken || processing) {
       return;
     }
@@ -355,6 +404,61 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
           </Button>
         </div>
       </div>
+
+      {/* API Key Prompt Dialog */}
+      <AlertDialog open={showApiKeyPrompt} onOpenChange={setShowApiKeyPrompt}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>API Key Required</AlertDialogTitle>
+            <AlertDialogDescription>
+              No API key is configured for this room. Select a provider and enter your API key to continue.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>Provider</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {PROVIDERS.map((provider) => (
+                  <button
+                    key={provider.value}
+                    type="button"
+                    onClick={() => setSelectedProvider(provider.value)}
+                    className={`rounded-lg border p-2 text-xs font-medium transition-all ${
+                      selectedProvider === provider.value
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border text-muted-foreground hover:border-foreground/20"
+                    }`}
+                  >
+                    {provider.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dialog-apiKey">API Key</Label>
+              <Input
+                id="dialog-apiKey"
+                type="password"
+                placeholder={PROVIDERS.find((p) => p.value === selectedProvider)?.placeholder}
+                value={enteredApiKey}
+                onChange={(e) => setEnteredApiKey(e.target.value)}
+                className="font-mono text-sm"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && enteredApiKey.trim()) {
+                    handleApiKeySubmit();
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleApiKeySubmit} disabled={!enteredApiKey.trim()}>
+              Start Evaluation
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div className="mb-6 grid grid-cols-5 gap-3">
         {[
