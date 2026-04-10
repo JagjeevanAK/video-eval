@@ -6,11 +6,17 @@ interface AIConfig {
   model?: string;
 }
 
+export interface EvaluationResult {
+  scores: Record<string, number>;
+  descriptions: Record<string, string>;
+}
+
 const PROVIDER_ENDPOINTS: Record<AIProvider, string> = {
   openai: 'https://api.openai.com/v1/chat/completions',
   claude: 'https://api.anthropic.com/v1/messages',
   gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
   openrouter: 'https://openrouter.ai/api/v1/chat/completions',
+  groq: 'https://api.groq.com/openai/v1/chat/completions',
 };
 
 const DEFAULT_MODELS: Record<AIProvider, string> = {
@@ -18,6 +24,7 @@ const DEFAULT_MODELS: Record<AIProvider, string> = {
   claude: 'claude-sonnet-4-20250514',
   gemini: 'gemini-2.5-flash',
   openrouter: 'google/gemini-2.5-flash-preview',
+  groq: 'llama-3.3-70b-versatile',
 };
 
 export async function evaluateVideoTranscript(
@@ -25,7 +32,7 @@ export async function evaluateVideoTranscript(
   evaluationPrompt: string,
   config: AIConfig,
   rubrics: RubricCriteria[]
-): Promise<Record<string, number>> {
+): Promise<EvaluationResult> {
   const model = config.model || DEFAULT_MODELS[config.provider];
   const userMessage = `Here is the video transcript to evaluate:\n\n${transcript}`;
 
@@ -33,7 +40,8 @@ export async function evaluateVideoTranscript(
 
   switch (config.provider) {
     case 'openai':
-    case 'openrouter': {
+    case 'openrouter':
+    case 'groq': {
       const endpoint = PROVIDER_ENDPOINTS[config.provider];
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -66,7 +74,7 @@ export async function evaluateVideoTranscript(
         },
         body: JSON.stringify({
           model,
-          max_tokens: 1024,
+          max_tokens: 2048,
           system: evaluationPrompt,
           messages: [{ role: 'user', content: userMessage }],
         }),
@@ -98,15 +106,20 @@ export async function evaluateVideoTranscript(
   // Parse JSON from response
   const jsonMatch = responseText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('No JSON found in AI response');
-  const scores = JSON.parse(jsonMatch[0]);
+  const parsed = JSON.parse(jsonMatch[0]);
+
+  // Handle both new format (with scores/descriptions) and legacy flat format
+  const scoresRaw = parsed.scores || parsed;
+  const descriptionsRaw = parsed.descriptions || {};
 
   // Validate scores
-  const result: Record<string, number> = {};
+  const scores: Record<string, number> = {};
+  const descriptions: Record<string, string> = {};
   for (const rubric of rubrics) {
-    const score = scores[rubric.name];
-    result[rubric.name] = typeof score === 'number' ? score : 0;
+    scores[rubric.name] = typeof scoresRaw[rubric.name] === 'number' ? scoresRaw[rubric.name] : 0;
+    descriptions[rubric.name] = typeof descriptionsRaw[rubric.name] === 'string' ? descriptionsRaw[rubric.name] : '';
   }
-  return result;
+  return { scores, descriptions };
 }
 
 export async function extractTranscriptFromVideo(videoBlob: Blob, config: AIConfig): Promise<string> {
@@ -150,8 +163,24 @@ export async function extractTranscriptFromVideo(videoBlob: Blob, config: AIConf
     return data.text;
   }
 
+  // For Groq, use Whisper-large-v3 via OpenAI-compatible endpoint
+  if (config.provider === 'groq') {
+    const formData = new FormData();
+    formData.append('file', videoBlob, 'video.mp4');
+    formData.append('model', 'whisper-large-v3');
+
+    const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      body: formData,
+    });
+    if (!res.ok) throw new Error(`Transcription error: ${res.status} ${await res.text()}`);
+    const data = await res.json();
+    return data.text;
+  }
+
   // For others, try audio extraction then OpenRouter with Whisper-compatible endpoint
-  throw new Error(`Direct transcription not supported for ${config.provider}. Please use OpenAI or Gemini for auto-transcription.`);
+  throw new Error(`Direct transcription not supported for ${config.provider}. Please use OpenAI, Gemini, or Groq for auto-transcription.`);
 }
 
 function blobToBase64(blob: Blob): Promise<string> {

@@ -1,4 +1,4 @@
-export type AIProvider = 'openai' | 'claude' | 'gemini' | 'openrouter';
+export type AIProvider = 'openai' | 'claude' | 'gemini' | 'openrouter' | 'groq';
 
 export interface RubricCriteria {
   name: string;
@@ -30,6 +30,7 @@ export interface VideoFile {
   webViewLink?: string;
   status: 'pending' | 'processing' | 'completed' | 'error';
   scores?: Record<string, number>;
+  descriptions?: Record<string, string>;
   error?: string;
 }
 

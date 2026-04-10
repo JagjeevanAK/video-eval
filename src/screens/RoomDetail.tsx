@@ -16,7 +16,7 @@ import {
 
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui/button";
-import { evaluateVideoTranscript, extractTranscriptFromVideo } from "@/lib/aiEvaluator";
+import { evaluateVideoTranscript, extractTranscriptFromVideo, type EvaluationResult } from "@/lib/aiEvaluator";
 import {
   appendToSheet,
   createSpreadsheet,
@@ -95,7 +95,7 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
     updateRoom(room.id, { status: "processing" });
     addLog("Starting evaluation...");
 
-    const headers = ["Sr.", "Name", ...room.rubrics.map((rubric) => rubric.name)];
+    const headers = ["Sr.", "Name", ...room.rubrics.map((rubric) => rubric.name), "Description"];
     let spreadsheetId = room.spreadsheetId;
 
     try {
@@ -127,19 +127,28 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
           });
 
           addLog(`  Evaluating with ${room.aiProvider}...`);
-          const scores = await evaluateVideoTranscript(
+          const result: EvaluationResult = await evaluateVideoTranscript(
             transcript,
             room.evaluationPrompt,
             { provider: room.aiProvider, apiKey: room.aiApiKey, model: room.aiModel },
             room.rubrics,
           );
 
-          updateVideo(room.id, video.id, { status: "completed", scores });
+          updateVideo(room.id, video.id, { status: "completed", scores: result.scores, descriptions: result.descriptions });
+
+          // Build combined description: "RubricName: explanation; RubricName2: explanation2"
+          const combinedDescription = room.rubrics
+            .map((rubric) => {
+              const desc = result.descriptions[rubric.name];
+              return desc ? `${rubric.name}: ${desc}` : null;
+            })
+            .filter(Boolean)
+            .join("; ");
 
           const videoTitle = video.name.replace(/\.[^/.]+$/, "");
-          const row = [index + 1, videoTitle, ...room.rubrics.map((rubric) => scores[rubric.name] || 0)];
+          const row = [index + 1, videoTitle, ...room.rubrics.map((rubric) => result.scores[rubric.name] || 0), combinedDescription];
           await appendToSheet(spreadsheetId, [row], auth.accessToken);
-          addLog(`  Completed: ${JSON.stringify(scores)}`);
+          addLog(`  Completed: ${JSON.stringify(result.scores)}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Failed to evaluate video";
           updateVideo(room.id, video.id, { status: "error", error: message });
@@ -250,12 +259,13 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
                   {rubric.name}
                 </th>
               ))}
+              <th className="min-w-[200px] p-3 text-left font-medium text-muted-foreground">Description</th>
             </tr>
           </thead>
           <tbody>
             {videos.length === 0 ? (
               <tr>
-                <td colSpan={3 + room.rubrics.length} className="p-8 text-center text-muted-foreground">
+                <td colSpan={4 + room.rubrics.length} className="p-8 text-center text-muted-foreground">
                   {loadingVideos ? (
                     <span className="flex items-center justify-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" /> Loading videos from Drive...
@@ -302,6 +312,23 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
                       )}
                     </td>
                   ))}
+                  <td className="p-3 text-sm text-muted-foreground">
+                    {video.descriptions ? (
+                      <div className="space-y-1">
+                        {room.rubrics.map((rubric) => {
+                          const desc = video.descriptions?.[rubric.name];
+                          if (!desc) return null;
+                          return (
+                            <p key={rubric.name} className="text-xs leading-relaxed">
+                              <span className="font-medium text-foreground">{rubric.name}:</span> {desc}
+                            </p>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground/40">-</span>
+                    )}
+                  </td>
                 </tr>
               ))
             )}
