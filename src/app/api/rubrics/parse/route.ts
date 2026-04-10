@@ -29,6 +29,10 @@ function sanitizeFileName(fileName: string): string {
 
 async function extractTextFromPdf(buffer: Buffer): Promise<string> {
   const pdfjs = await import("pdfjs-dist/build/pdf.mjs");
+  const pdfjsWorker = await import("pdfjs-dist/build/pdf.worker.mjs");
+
+  pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
   const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
   const pages: string[] = [];
 
