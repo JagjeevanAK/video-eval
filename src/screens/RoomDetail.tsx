@@ -102,7 +102,7 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
     updateRoom(room.id, { status: "processing" });
     addLog("Starting clip-based evaluation...");
 
-    const headers = ["Sr.", "Name", "Clips Evaluated", ...room.rubrics.map((rubric) => rubric.name), "Description"];
+    const headers = ["Sr.", "Name", "Clips Evaluated", ...room.rubrics.map((rubric) => rubric.name), "TOTAL MARKS", "Description"];
     let spreadsheetId = room.spreadsheetId;
 
     try {
@@ -197,12 +197,19 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
             .filter(Boolean)
             .join("; ");
 
+          // Calculate total marks (sum of all rubric scores)
+          const totalMarks = room.rubrics.reduce(
+            (sum, rubric) => sum + (averagedScores[rubric.name] || 0),
+            0,
+          );
+
           const videoTitle = video.name.replace(/\.[^/.]+$/, "");
           const row = [
             index + 1,
             videoTitle,
             clipDefs.length,
             ...room.rubrics.map((rubric) => averagedScores[rubric.name] || 0),
+            totalMarks,
             combinedDescription,
           ];
           await appendToSheet(spreadsheetId, [row], auth.accessToken);
