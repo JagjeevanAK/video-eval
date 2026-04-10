@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { Video } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { initGoogleAuth, requestAccessToken } from "@/lib/googleApi";
+import { initGoogleAuth, requestAccessToken, ensureGoogleScriptsLoaded } from "@/lib/googleApi";
 import { useAppStore } from "@/stores/useAppStore";
 
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
@@ -21,34 +21,11 @@ export default function GoogleAuthScreen() {
       return;
     }
 
-    void initGoogleAuth(GOOGLE_CLIENT_ID, (token, userInfo) => {
-      setAuth({
-        isAuthenticated: true,
-        accessToken: token,
-        userEmail: userInfo.email,
-        userName: userInfo.name,
-        userPhoto: userInfo.picture,
-      });
-    })
-      .then(() => setInitialized(true))
-      .catch((initError) => {
-        const message = initError instanceof Error ? initError.message : "Failed to initialize Google Auth";
-        setError(message);
-      });
-  }, [setAuth]);
-
-  async function handleSignIn() {
-    if (!GOOGLE_CLIENT_ID) {
-      setError("NEXT_PUBLIC_GOOGLE_CLIENT_ID environment variable is not set.");
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-
-    try {
-      if (!initialized) {
-        await initGoogleAuth(GOOGLE_CLIENT_ID, (token, userInfo) => {
+    // Eagerly load all Google scripts so they're ready when the user clicks.
+    // This avoids breaking the user gesture chain with async awaits on click.
+    void ensureGoogleScriptsLoaded()
+      .then(() => {
+        initGoogleAuth(GOOGLE_CLIENT_ID, (token, userInfo) => {
           setAuth({
             isAuthenticated: true,
             accessToken: token,
@@ -58,15 +35,38 @@ export default function GoogleAuthScreen() {
           });
         });
         setInitialized(true);
-      }
+      })
+      .catch((initError) => {
+        const message = initError instanceof Error ? initError.message : "Failed to initialize Google Auth";
+        setError(message);
+      });
+  }, [setAuth]);
 
-      requestAccessToken();
-    } catch (signInError) {
-      const message = signInError instanceof Error ? signInError.message : "Failed to start Google sign-in";
-      setError(message);
-    } finally {
-      setLoading(false);
+  function handleSignIn() {
+    if (!GOOGLE_CLIENT_ID) {
+      setError("NEXT_PUBLIC_GOOGLE_CLIENT_ID environment variable is not set.");
+      return;
     }
+
+    setError("");
+
+    if (!initialized) {
+      // Scripts are still loading — show a message to wait
+      setError("Google sign-in is still loading. Please try again in a moment.");
+      return;
+    }
+
+    // requestAccessToken is called synchronously within the user gesture,
+    // so browsers will allow the popup to open.
+    setLoading(true);
+    requestAccessToken()
+      .catch((signInError) => {
+        const message = signInError instanceof Error ? signInError.message : "Sign-in was cancelled or failed";
+        setError(message);
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }
 
   return (

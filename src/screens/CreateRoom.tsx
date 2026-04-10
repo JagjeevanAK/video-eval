@@ -14,15 +14,16 @@ import { Input } from "@/components/ui/input";
 import { listVideosInFolder, openDriveFolderPicker } from "@/lib/googleApi";
 import { generateEvaluationPrompt, RUBRIC_FILE_ACCEPT } from "@/lib/rubricParser";
 import { parseRubricUpload, summarizeRubricsUpload } from "@/lib/rubricUpload";
+import { resolveApiKey, hasApiKey, getProviderEnvVar } from "@/lib/apiKeyResolver";
 import { useAppStore } from "@/stores/useAppStore";
 import type { AIProvider, RubricCriteria, VideoFile } from "@/types";
 
-const AI_PROVIDERS: { value: AIProvider; label: string; placeholder: string }[] = [
-  { value: "openai", label: "OpenAI", placeholder: "sk-..." },
-  { value: "claude", label: "Claude (Anthropic)", placeholder: "sk-ant-..." },
-  { value: "gemini", label: "Google Gemini", placeholder: "AIza..." },
-  { value: "openrouter", label: "OpenRouter", placeholder: "sk-or-..." },
-  { value: "groq", label: "Groq", placeholder: "gsk_..." },
+const AI_PROVIDERS: { value: AIProvider; label: string; placeholder: string; envVar: string }[] = [
+  { value: "openai", label: "OpenAI", placeholder: "sk-...", envVar: "NEXT_PUBLIC_OPENAI_API_KEY" },
+  { value: "claude", label: "Claude (Anthropic)", placeholder: "sk-ant-...", envVar: "NEXT_PUBLIC_ANTHROPIC_API_KEY" },
+  { value: "gemini", label: "Google Gemini", placeholder: "AIza...", envVar: "NEXT_PUBLIC_GOOGLE_AI_API_KEY" },
+  { value: "openrouter", label: "OpenRouter", placeholder: "sk-or-...", envVar: "NEXT_PUBLIC_OPENROUTER_API_KEY" },
+  { value: "groq", label: "Groq", placeholder: "gsk_...", envVar: "NEXT_PUBLIC_GROQ_API_KEY" },
 ];
 const GOOGLE_PICKER_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_PICKER_API_KEY ?? "";
 const GOOGLE_APP_ID = process.env.NEXT_PUBLIC_GOOGLE_APP_ID ?? "";
@@ -112,7 +113,8 @@ export default function CreateRoom() {
 
   const doSummarize = useCallback(
     async (sourceText: string) => {
-      if (!aiApiKey.trim()) {
+      const resolvedKey = resolveApiKey(aiProvider, aiApiKey);
+      if (!resolvedKey) {
         return;
       }
 
@@ -122,7 +124,7 @@ export default function CreateRoom() {
       try {
         const summary = await summarizeRubricsUpload({
           provider: aiProvider,
-          apiKey: aiApiKey.trim(),
+          apiKey: resolvedKey,
           model: aiModel.trim() || undefined,
           rubricText: sourceText,
         });
@@ -173,15 +175,16 @@ export default function CreateRoom() {
 
   // Auto-summarize when rubrics are parsed AND API key is available
   useEffect(() => {
-    if (pendingSummarizeRef.current && aiApiKey.trim() && !summarizing && rubrics.length > 0) {
+    if (pendingSummarizeRef.current && hasApiKey(aiProvider, aiApiKey) && !summarizing && rubrics.length > 0) {
       const { sourceText } = pendingSummarizeRef.current;
       pendingSummarizeRef.current = null;
       void doSummarize(sourceText);
     }
-  }, [aiApiKey, doSummarize, rubrics.length, summarizing]);
+  }, [aiApiKey, aiProvider, doSummarize, rubrics.length, summarizing]);
 
   const handleCreate = useCallback(() => {
-    if (!name.trim() || !folderResult || rubrics.length === 0 || !aiApiKey.trim()) {
+    const resolvedKey = resolveApiKey(aiProvider, aiApiKey);
+    if (!name.trim() || !folderResult || rubrics.length === 0 || !resolvedKey) {
       return;
     }
 
@@ -194,7 +197,7 @@ export default function CreateRoom() {
       name: name.trim(),
       description: description.trim(),
       aiProvider,
-      aiApiKey: aiApiKey.trim(),
+      aiApiKey: resolvedKey,
       aiModel: aiModel.trim() || undefined,
       driveFolderId: folderResult.id,
       driveFolderName: folderResult.name,
@@ -208,16 +211,21 @@ export default function CreateRoom() {
     router.push(`/room/${room.id}`);
   }, [addRoom, aiApiKey, aiModel, aiProvider, description, evaluationPrompt, folderResult, name, router, rubrics, rubricSourceText]);
 
-  const isValid = Boolean(name.trim() && folderResult && rubrics.length > 0 && aiApiKey.trim() && !rubricParsing && !summarizing);
+  const hasApi = hasApiKey(aiProvider, aiApiKey);
+  const resolvedKey = resolveApiKey(aiProvider, aiApiKey);
+  const selectedProvider = AI_PROVIDERS.find((provider) => provider.value === aiProvider)!;
+
+  const isValid = Boolean(name.trim() && folderResult && rubrics.length > 0 && hasApi && !rubricParsing && !summarizing);
   const missingRequirements = [
     !name.trim() ? "Enter a room name." : null,
     !folderResult ? "Choose a Google Drive folder." : null,
     rubrics.length === 0 && !rubricParsing ? "Upload a rubric file with at least one criterion." : null,
     rubricParsing ? "Wait for the rubric file to finish parsing." : null,
     summarizing ? "Wait for the rubric summary to finish generating." : null,
-    !aiApiKey.trim() ? "Enter an AI API key." : null,
+    !hasApi
+      ? `Enter an AI API key or set the ${selectedProvider.envVar} environment variable.`
+      : null,
   ].filter((item): item is string => Boolean(item));
-  const selectedProvider = AI_PROVIDERS.find((provider) => provider.value === aiProvider)!;
 
   return (
     <Layout>
@@ -324,7 +332,9 @@ export default function CreateRoom() {
               ))}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="apiKey">API Key *</Label>
+              <Label htmlFor="apiKey">
+                API Key {hasApi ? "(optional)" : "*"}
+              </Label>
               <Input
                 id="apiKey"
                 type="password"
@@ -333,6 +343,16 @@ export default function CreateRoom() {
                 onChange={(event) => setAiApiKey(event.target.value)}
                 className="font-mono text-sm"
               />
+              {hasApi && !aiApiKey.trim() ? (
+                <p className="flex items-center gap-1.5 text-xs text-success">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Using API key from {selectedProvider.envVar} environment variable
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Leave blank to use the {selectedProvider.envVar} environment variable, or enter a key here to override.
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="model">Model (optional)</Label>
@@ -401,9 +421,9 @@ export default function CreateRoom() {
                   placeholder={
                     summarizing
                       ? "Generating rubric summary..."
-                      : aiApiKey.trim()
+                      : hasApi
                         ? "Upload a rubric file to see the AI summary here..."
-                        : "Enter your API key above, then upload a rubric file."
+                        : `Enter your API key or set ${selectedProvider.envVar}, then upload a rubric file.`
                   }
                   rows={8}
                   disabled={summarizing}
@@ -414,7 +434,7 @@ export default function CreateRoom() {
                     variant="outline"
                     size="sm"
                     onClick={() => pendingSummarizeRef.current && doSummarize(rubricSourceText)}
-                    disabled={summarizing || !aiApiKey.trim()}
+                    disabled={summarizing || !hasApi}
                   >
                     <Sparkles className="mr-1.5 h-3.5 w-3.5" />
                     Regenerate Summary

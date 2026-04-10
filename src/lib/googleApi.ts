@@ -51,7 +51,7 @@ interface GoogleApiErrorResponse {
 }
 
 interface GoogleTokenClient {
-  requestAccessToken: () => void;
+  requestAccessToken: (config?: { prompt?: string }) => void;
 }
 
 interface GapiClient {
@@ -125,6 +125,8 @@ declare global {
 }
 
 let tokenClient: GoogleTokenClient | null = null;
+let pendingResolve: ((token: string) => void) | null = null;
+let pendingReject: ((error: Error) => void) | null = null;
 let googleScriptPromise: Promise<void> | null = null;
 let gapiScriptPromise: Promise<void> | null = null;
 
@@ -219,9 +221,12 @@ export async function initGoogleAuth(
   clientId: string,
   onSuccess: (token: string, userInfo: { email: string; name: string; picture: string }) => void,
 ): Promise<void> {
+  // Load scripts first
   await loadGoogleScript();
   await loadGapiScript();
 
+  // After scripts are loaded, initTokenClient is synchronous
+  // so the token client is ready for requestAccessToken()
   tokenClient = window.google.accounts.oauth2.initTokenClient({
     client_id: clientId,
     scope: SCOPES,
@@ -230,17 +235,42 @@ export async function initGoogleAuth(
         window.gapi.client.setToken({ access_token: response.access_token });
         const userInfo = await fetchUserInfo(response.access_token);
         onSuccess(response.access_token, userInfo);
+        pendingResolve?.(response.access_token);
+        pendingResolve = null;
+        pendingReject = null;
+      } else {
+        const error = new Error("Google sign-in was cancelled or failed");
+        pendingReject?.(error);
+        pendingResolve = null;
+        pendingReject = null;
       }
     },
   });
 }
 
-export function requestAccessToken() {
+export async function ensureGoogleScriptsLoaded(): Promise<void> {
+  await loadGoogleScript();
+  await loadGapiScript();
+}
+
+export function requestAccessToken(): Promise<string> {
   if (!tokenClient) {
     throw new Error("Google Auth not initialized");
   }
 
-  tokenClient.requestAccessToken();
+  return new Promise<string>((resolve, reject) => {
+    pendingResolve = resolve;
+    pendingReject = reject;
+
+    try {
+      tokenClient.requestAccessToken({ prompt: "consent" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to request Google access token";
+      pendingReject?.(new Error(message));
+      pendingResolve = null;
+      pendingReject = null;
+    }
+  });
 }
 
 export async function openDriveFolderPicker(options: {
@@ -455,6 +485,61 @@ export async function appendToSheet(
   if (!res.ok) {
     throw new Error(await getGoogleApiError(res, "Failed to append rows to Google Sheet"));
   }
+}
+
+export async function getSheetValues(
+  spreadsheetId: string,
+  range: string,
+  accessToken: string,
+): Promise<(string | number)[][]> {
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+
+  if (!res.ok) {
+    throw new Error(await getGoogleApiError(res, "Failed to read Google Sheet"));
+  }
+
+  const data = await res.json();
+  return data.values || [];
+}
+
+export interface EvaluatedVideoInfo {
+  name: string;
+  clipsEvaluated: number;
+  scores: Record<string, number>;
+  descriptions: Record<string, string>;
+  totalMarks: number;
+}
+
+export async function getEvaluatedVideos(
+  spreadsheetId: string,
+  rubricNames: string[],
+  accessToken: string,
+): Promise<EvaluatedVideoInfo[]> {
+  const values = await getSheetValues(spreadsheetId, "Evaluations!A:Z", accessToken);
+
+  // Skip header row
+  const dataRows = values.slice(1);
+
+  return dataRows
+    .map((row) => {
+      // Row format: [Sr., Name, Clips Evaluated, ...rubricScores, TOTAL MARKS, Description]
+      const name = String(row[1] || "");
+      const clipsEvaluated = Number(row[2]) || 0;
+      const totalMarks = Number(row[row.length - 2]) || 0;
+      const description = String(row[row.length - 1] || "");
+
+      // Extract rubric scores (columns 3 to 3 + rubricNames.length - 1)
+      const scores: Record<string, number> = {};
+      rubricNames.forEach((rubricName, index) => {
+        scores[rubricName] = Number(row[3 + index]) || 0;
+      });
+
+      return { name, clipsEvaluated, scores, descriptions: { Description: description }, totalMarks };
+    })
+    .filter((info) => info.name && info.clipsEvaluated > 0);
 }
 
 export async function moveFileToFolder(spreadsheetId: string, folderId: string, accessToken: string): Promise<void> {

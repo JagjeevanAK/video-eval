@@ -1,4 +1,5 @@
 import type { AIProvider } from '@/types';
+import { logger } from '@/lib/logger';
 
 const PROVIDER_ENDPOINTS: Record<AIProvider, string> = {
   openai: 'https://api.openai.com/v1/chat/completions',
@@ -38,6 +39,8 @@ export async function summarizeRubrics(req: SummarizeRequest): Promise<string> {
   const { provider, apiKey, model: requestedModel, rubricText } = req;
   const model = requestedModel || DEFAULT_MODELS[provider];
 
+  logger.info("RubricSummarizer", "Starting rubric summarization", { provider, model, textLength: rubricText.length });
+
   let responseText: string;
 
   switch (provider) {
@@ -60,9 +63,14 @@ export async function summarizeRubrics(req: SummarizeRequest): Promise<string> {
           temperature: 0.3,
         }),
       });
-      if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
+      if (!res.ok) {
+        const errorText = await res.text();
+        logger.error("RubricSummarizer", "API error", { provider, status: res.status, error: errorText });
+        throw new Error(`API error: ${res.status} ${errorText}`);
+      }
       const data = await res.json();
       responseText = data.choices[0].message.content;
+      logger.debug("RubricSummarizer", "API response received", { provider, responseLength: responseText?.length || 0 });
       break;
     }
     case 'claude': {
@@ -81,9 +89,14 @@ export async function summarizeRubrics(req: SummarizeRequest): Promise<string> {
           messages: [{ role: 'user', content: rubricText }],
         }),
       });
-      if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
+      if (!res.ok) {
+        const errorText = await res.text();
+        logger.error("RubricSummarizer", "Claude API error", { status: res.status, error: errorText });
+        throw new Error(`API error: ${res.status} ${errorText}`);
+      }
       const data = await res.json();
       responseText = data.content[0].text;
+      logger.debug("RubricSummarizer", "Claude response received", { responseLength: responseText?.length || 0 });
       break;
     }
     case 'gemini': {
@@ -96,14 +109,21 @@ export async function summarizeRubrics(req: SummarizeRequest): Promise<string> {
           generationConfig: { temperature: 0.3 },
         }),
       });
-      if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
+      if (!res.ok) {
+        const errorText = await res.text();
+        logger.error("RubricSummarizer", "Gemini API error", { status: res.status, error: errorText });
+        throw new Error(`API error: ${res.status} ${errorText}`);
+      }
       const data = await res.json();
       responseText = data.candidates[0].content.parts[0].text;
+      logger.debug("RubricSummarizer", "Gemini response received", { responseLength: responseText?.length || 0 });
       break;
     }
     default:
+      logger.error("RubricSummarizer", "Unsupported provider", { provider });
       throw new Error(`Unsupported provider: ${provider}`);
   }
 
+  logger.info("RubricSummarizer", "Rubric summarization completed", { responseLength: responseText.length });
   return responseText.trim();
 }

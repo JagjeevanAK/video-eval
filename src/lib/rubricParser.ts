@@ -361,11 +361,17 @@ export function generateEvaluationPrompt(rubrics: RubricCriteria[], sourceText?:
     ? `\nAdditional rubric context from the uploaded file:\n${rubricContext.slice(0, 3000)}\n`
     : "";
 
-  return `You are an expert video evaluator. Evaluate the following video transcript/content based on these rubric criteria:
+  return `You are an expert video evaluator. Evaluate the following 30-second video clip based on these rubric criteria:
+
+You will be provided with:
+1. The transcript of spoken content in this 30-second clip
+2. A screenshot captured from the middle of this clip
 
 ${criteriaList}
 ${contextSection}
-For each criterion, provide a numeric score within the specified range AND a concise explanation (1-2 sentences) for why that score was given. Reference specific moments or aspects from the transcript that influenced the score. Be fair, objective, and consistent.
+For each criterion, consider BOTH the transcript (spoken content, keywords, discussion topics) AND the screenshot (visual elements, presentation style, engagement indicators, body language if visible, slides/content being shown).
+
+Provide a numeric score within the specified range AND a concise explanation (1-2 sentences) for why that score was given. Reference specific moments from the transcript or visual elements from the screenshot that influenced the score. Be fair, objective, and consistent.
 
 Respond ONLY with a valid JSON object in this exact format:
 {

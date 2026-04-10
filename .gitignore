@@ -6,6 +6,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+.log
 .env
 node_modules
 .next
@@ -14,6 +15,7 @@ playwright-report
 test-results
 *.tsbuildinfo
 *.local
+implementation_docs/
 
 # Editor directories and files
 .vscode/*
