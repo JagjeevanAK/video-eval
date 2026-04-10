@@ -1,4 +1,4 @@
-import type { AIProvider, RubricCriteria } from '@/types';
+import type { AIProvider, RubricCriteria, ClipEvaluationResult } from '@/types';
 
 interface AIConfig {
   provider: AIProvider;
@@ -9,6 +9,10 @@ interface AIConfig {
 export interface EvaluationResult {
   scores: Record<string, number>;
   descriptions: Record<string, string>;
+}
+
+export interface ClipEvaluationConfig extends AIConfig {
+  maxScore?: number; // The max score that clips are evaluated on
 }
 
 const PROVIDER_ENDPOINTS: Record<AIProvider, string> = {
@@ -193,4 +197,200 @@ function blobToBase64(blob: Blob): Promise<string> {
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
+}
+
+/**
+ * Evaluate a single 30-second clip using transcript + screenshot
+ */
+export async function evaluateClipWithScreenshot(
+  transcript: string,
+  screenshotBase64: string,
+  screenshotMimeType: string,
+  evaluationPrompt: string,
+  config: AIConfig,
+  rubrics: RubricCriteria[],
+  clipIndex: number,
+): Promise<ClipEvaluationResult> {
+  const model = config.model || DEFAULT_MODELS[config.provider];
+  const userMessage = `Clip ${clipIndex + 1} transcript:\n\n${transcript}`;
+
+  let responseText: string;
+
+  switch (config.provider) {
+    case 'openai':
+    case 'openrouter': {
+      const endpoint = PROVIDER_ENDPOINTS[config.provider];
+      const contentParts: Array<Record<string, unknown>> = [
+        { type: 'text', text: userMessage },
+        {
+          type: 'image_url',
+          image_url: { url: `data:${screenshotMimeType};base64,${screenshotBase64}` },
+        },
+      ];
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: evaluationPrompt },
+            { role: 'user', content: contentParts },
+          ],
+          temperature: 0.3,
+          max_tokens: 2048,
+        }),
+      });
+      if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
+      const data = await res.json();
+      responseText = data.choices[0].message.content;
+      break;
+    }
+    case 'claude': {
+      const contentParts: Array<Record<string, unknown>> = [
+        { type: 'text', text: userMessage },
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: screenshotMimeType,
+            data: screenshotBase64,
+          },
+        },
+      ];
+
+      const res = await fetch(PROVIDER_ENDPOINTS.claude, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': config.apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 2048,
+          system: evaluationPrompt,
+          messages: [{ role: 'user', content: contentParts }],
+        }),
+      });
+      if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
+      const data = await res.json();
+      responseText = data.content[0].text;
+      break;
+    }
+    case 'gemini': {
+      const url = `${PROVIDER_ENDPOINTS.gemini}/${model}:generateContent?key=${config.apiKey}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: evaluationPrompt },
+              { text: userMessage },
+              {
+                inlineData: {
+                  mimeType: screenshotMimeType,
+                  data: screenshotBase64,
+                },
+              },
+            ],
+          }],
+          generationConfig: { temperature: 0.3 },
+        }),
+      });
+      if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
+      const data = await res.json();
+      responseText = data.candidates[0].content.parts[0].text;
+      break;
+    }
+    case 'groq': {
+      // Groq doesn't support vision, use text only
+      const endpoint = PROVIDER_ENDPOINTS[config.provider];
+      const fullMessage = `${userMessage}\n\n[Screenshot was captured for this clip but cannot be processed by Groq. Please evaluate based on the transcript only.]`;
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: evaluationPrompt },
+            { role: 'user', content: fullMessage },
+          ],
+          temperature: 0.3,
+        }),
+      });
+      if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
+      const data = await res.json();
+      responseText = data.choices[0].message.content;
+      break;
+    }
+    default:
+      throw new Error(`Unsupported provider: ${config.provider}`);
+  }
+
+  // Parse JSON from response
+  const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('No JSON found in AI response');
+  const parsed = JSON.parse(jsonMatch[0]);
+
+  // Handle both new format (with scores/descriptions) and legacy flat format
+  const scoresRaw = parsed.scores || parsed;
+  const descriptionsRaw = parsed.descriptions || {};
+
+  // Validate scores
+  const scores: Record<string, number> = {};
+  const descriptions: Record<string, string> = {};
+  for (const rubric of rubrics) {
+    scores[rubric.name] = typeof scoresRaw[rubric.name] === 'number' ? scoresRaw[rubric.name] : 0;
+    descriptions[rubric.name] = typeof descriptionsRaw[rubric.name] === 'string' ? descriptionsRaw[rubric.name] : '';
+  }
+
+  return {
+    clipIndex,
+    startTime: 0, // Will be set by caller
+    endTime: 0, // Will be set by caller
+    scores,
+    descriptions,
+  };
+}
+
+/**
+ * Average scores from multiple clip evaluations to get final video scores
+ */
+export function averageClipScores(
+  clipResults: ClipEvaluationResult[],
+  rubrics: RubricCriteria[],
+): { averagedScores: Record<string, number>; averagedDescriptions: Record<string, string> } {
+  if (clipResults.length === 0) {
+    return { averagedScores: {}, averagedDescriptions: {} };
+  }
+
+  const averagedScores: Record<string, number> = {};
+  const averagedDescriptions: Record<string, string> = {};
+
+  for (const rubric of rubrics) {
+    const scores = clipResults.map((r) => r.scores[rubric.name] ?? 0);
+    const avg = scores.reduce((sum, s) => sum + s, 0) / scores.length;
+    // Round to 2 decimal places
+    averagedScores[rubric.name] = Math.round(avg * 100) / 100;
+
+    // Combine descriptions: take the most common themes
+    const descs = clipResults
+      .map((r) => r.descriptions[rubric.name])
+      .filter(Boolean);
+    averagedDescriptions[rubric.name] = descs.length > 0
+      ? `Across ${clipResults.length} clips: ${descs.join(' | ')}`
+      : '';
+  }
+
+  return { averagedScores, averagedDescriptions };
 }

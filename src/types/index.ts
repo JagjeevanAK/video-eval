@@ -32,6 +32,27 @@ export interface VideoFile {
   scores?: Record<string, number>;
   descriptions?: Record<string, string>;
   error?: string;
+  // Clip-based evaluation fields
+  clipEvaluationResults?: ClipEvaluationResult[];
+  averagedScores?: Record<string, number>;
+  averagedDescriptions?: Record<string, string>;
+}
+
+export interface VideoClip {
+  clipIndex: number;
+  startTime: number;
+  endTime: number;
+  transcript: string;
+  screenshotBase64: string; // JPEG screenshot as base64
+  screenshotMimeType: string;
+}
+
+export interface ClipEvaluationResult {
+  clipIndex: number;
+  startTime: number;
+  endTime: number;
+  scores: Record<string, number>;
+  descriptions: Record<string, string>;
 }
 
 export interface EvaluationResult {
