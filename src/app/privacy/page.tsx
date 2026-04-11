@@ -35,9 +35,9 @@ export default function PrivacyPage() {
       <div className="legal-section">
         <h2>Storage and retention</h2>
         <p>
-          VidEval stores Google access tokens and room configuration locally in the user&apos;s browser. The application
-          does not use a dedicated backend database to persist Google data. Data remains available until the user clears
-          local browser storage or signs out.
+          VidEval keeps Google access tokens in memory for the current session only and stores room configuration
+          locally in the user&apos;s browser. The application does not use a dedicated backend database to persist Google
+          data. Stored room data remains available until the user clears local browser storage.
         </p>
       </div>
 

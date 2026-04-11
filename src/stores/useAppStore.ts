@@ -67,7 +67,6 @@ export const useAppStore = create<AppState>()(
     {
       name: 'video-eval-store',
       partialize: (state) => ({
-        auth: state.auth,
         rooms: state.rooms,
       }),
     }

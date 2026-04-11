@@ -99,7 +99,9 @@ export default function GoogleAuthScreen() {
         </div>
 
         <div className="mt-4 space-y-2">
-          <p className="text-xs text-muted-foreground">Your credentials are stored locally in your browser.</p>
+          <p className="text-xs text-muted-foreground">
+            Google access tokens are kept only for the current session and cleared on sign out.
+          </p>
           <div className="flex items-center justify-center gap-3 text-xs text-muted-foreground">
             <Link href="/" className="transition-colors hover:text-foreground">
               Home

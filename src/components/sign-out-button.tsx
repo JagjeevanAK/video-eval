@@ -14,6 +14,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button, type ButtonProps } from "@/components/ui/button";
+import { clearGoogleClientToken, revokeGoogleAccessToken } from "@/lib/googleApi";
 import { useAppStore } from "@/stores/useAppStore";
 
 interface SignOutButtonProps extends Omit<ButtonProps, "onClick"> {
@@ -22,11 +23,27 @@ interface SignOutButtonProps extends Omit<ButtonProps, "onClick"> {
 }
 
 export function SignOutButton({ children = "Sign out", onSignedOut, ...buttonProps }: SignOutButtonProps) {
+  const auth = useAppStore((state) => state.auth);
   const clearAuth = useAppStore((state) => state.clearAuth);
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    let revokeErrorMessage = "";
+
+    if (auth.accessToken) {
+      try {
+        await revokeGoogleAccessToken(auth.accessToken);
+      } catch (error: unknown) {
+        revokeErrorMessage = error instanceof Error ? error.message : "Failed to revoke Google access token";
+      }
+    }
+
+    clearGoogleClientToken();
     clearAuth();
     onSignedOut?.();
+
+    if (revokeErrorMessage) {
+      window.alert(`Signed out locally, but Google token revocation failed: ${revokeErrorMessage}`);
+    }
   };
 
   return (

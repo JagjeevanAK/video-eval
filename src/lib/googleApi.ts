@@ -1,11 +1,16 @@
-const SCOPES = [
+const REQUIRED_SCOPES = [
   "https://www.googleapis.com/auth/drive.file",
   "https://www.googleapis.com/auth/drive.readonly",
   "https://www.googleapis.com/auth/spreadsheets",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
 ].join(" ");
 
 interface GoogleTokenResponse {
   access_token?: string;
+  scope?: string;
+  error?: string;
+  error_description?: string;
 }
 
 interface GoogleUserInfo {
@@ -50,8 +55,10 @@ interface GoogleApiErrorResponse {
   };
 }
 
+type GoogleTokenPrompt = "" | "consent" | "select_account";
+
 interface GoogleTokenClient {
-  requestAccessToken: (config?: { prompt?: string }) => void;
+  requestAccessToken: (config?: { prompt?: GoogleTokenPrompt }) => void;
 }
 
 interface GapiClient {
@@ -132,6 +139,37 @@ let gapiScriptPromise: Promise<void> | null = null;
 
 function toError(error: unknown, fallbackMessage: string): Error {
   return error instanceof Error ? error : new Error(fallbackMessage);
+}
+
+function parseScopes(scopeValue: string | undefined): Set<string> {
+  if (!scopeValue) {
+    return new Set();
+  }
+
+  return new Set(
+    scopeValue
+      .split(/\s+/)
+      .map((scope) => scope.trim())
+      .filter(Boolean),
+  );
+}
+
+function getMissingRequiredScopes(scopeValue: string | undefined): string[] {
+  const grantedScopes = parseScopes(scopeValue);
+  const requiredScopes = REQUIRED_SCOPES.split(" ");
+  return requiredScopes.filter((scope) => !grantedScopes.has(scope));
+}
+
+function getTokenError(response: GoogleTokenResponse): Error {
+  if (response.error_description) {
+    return new Error(response.error_description);
+  }
+
+  if (response.error) {
+    return new Error(`Google sign-in failed: ${response.error}`);
+  }
+
+  return new Error("Google sign-in was cancelled or failed");
 }
 
 export function loadGoogleScript(): Promise<void> {
@@ -233,18 +271,25 @@ export async function initGoogleAuth(
   // so the token client is ready for requestAccessToken()
   tokenClient = window.google.accounts.oauth2.initTokenClient({
     client_id: clientId,
-    scope: SCOPES,
+    scope: REQUIRED_SCOPES,
     callback: async (response) => {
-      if (response.access_token) {
+      try {
+        if (response.error || !response.access_token) {
+          throw getTokenError(response);
+        }
+
+        const missingScopes = getMissingRequiredScopes(response.scope);
+        if (missingScopes.length > 0) {
+          throw new Error(`Google sign-in did not grant required permissions: ${missingScopes.join(", ")}`);
+        }
+
         window.gapi.client.setToken({ access_token: response.access_token });
         const userInfo = await fetchUserInfo(response.access_token);
         onSuccess(response.access_token, userInfo);
         pendingResolve?.(response.access_token);
-        pendingResolve = null;
-        pendingReject = null;
-      } else {
-        const error = new Error("Google sign-in was cancelled or failed");
-        pendingReject?.(error);
+      } catch (error: unknown) {
+        pendingReject?.(toError(error, "Google sign-in failed"));
+      } finally {
         pendingResolve = null;
         pendingReject = null;
       }
@@ -257,7 +302,7 @@ export async function ensureGoogleScriptsLoaded(): Promise<void> {
   await loadGapiScript();
 }
 
-export function requestAccessToken(): Promise<string> {
+export function requestAccessToken(options?: { prompt?: GoogleTokenPrompt }): Promise<string> {
   if (!tokenClient) {
     throw new Error("Google Auth not initialized");
   }
@@ -267,7 +312,7 @@ export function requestAccessToken(): Promise<string> {
     pendingReject = reject;
 
     try {
-      tokenClient.requestAccessToken({ prompt: "consent" });
+      tokenClient.requestAccessToken({ prompt: options?.prompt ?? "consent" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to request Google access token";
       pendingReject?.(new Error(message));
@@ -275,6 +320,26 @@ export function requestAccessToken(): Promise<string> {
       pendingReject = null;
     }
   });
+}
+
+export function clearGoogleClientToken(): void {
+  if (window.gapi?.client) {
+    window.gapi.client.setToken({ access_token: "" });
+  }
+}
+
+export async function revokeGoogleAccessToken(token: string): Promise<void> {
+  const response = await fetch("https://oauth2.googleapis.com/revoke", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ token }).toString(),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getGoogleApiError(response, "Failed to revoke Google access token"));
+  }
 }
 
 export async function openDriveFolderPicker(options: {
