@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { listVideosInFolder, openDriveFolderPicker } from "@/lib/googleApi";
 import { generateEvaluationPrompt, RUBRIC_FILE_ACCEPT } from "@/lib/rubricParser";
-import { parseRubricUpload, summarizeRubricsUpload } from "@/lib/rubricUpload";
+import { parseRubricUpload, extractRubricsFromImageFile } from "@/lib/rubricUpload";
 import { resolveApiKey, hasApiKey, getProviderEnvVar } from "@/lib/apiKeyResolver";
 import { useAppStore } from "@/stores/useAppStore";
 import type { AIProvider, RubricCriteria, VideoFile } from "@/types";
@@ -49,7 +49,6 @@ export default function CreateRoom() {
   const [evaluationPrompt, setEvaluationPrompt] = useState("");
   const [rubricFileName, setRubricFileName] = useState("");
   const [rubricParsing, setRubricParsing] = useState(false);
-  const [summarizing, setSummarizing] = useState(false);
   const [summaryError, setSummaryError] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -111,33 +110,38 @@ export default function CreateRoom() {
     }
   }, [auth.accessToken, loadFolderVideos]);
 
-  const doSummarize = useCallback(
-    async (sourceText: string) => {
+  // Track last parsed rubrics so we can re-extract when the API key changes
+  const pendingExtractRef = useRef<{ file: File } | null>(null);
+
+  const doExtractRubricsFromImage = useCallback(
+    async (file: File) => {
       const resolvedKey = resolveApiKey(aiProvider, aiApiKey);
       if (!resolvedKey) {
         return;
       }
 
-      setSummarizing(true);
+      setRubricParsing(true);
       setSummaryError("");
 
       try {
-        const summary = await summarizeRubricsUpload({
+        const result = await extractRubricsFromImageFile({
+          file,
           provider: aiProvider,
           apiKey: resolvedKey,
           model: aiModel.trim() || undefined,
-          rubricText: sourceText,
         });
-        setRubricSummary(summary);
-        setEvaluationPrompt(generateEvaluationPrompt(rubrics, sourceText));
+        setRubrics(result.rubrics);
+        setRubricSourceText(result.sourceText);
+        setEvaluationPrompt(generateEvaluationPrompt(result.rubrics, result.sourceText));
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to summarize rubrics";
+        const message = error instanceof Error ? error.message : "Failed to extract rubrics from image file";
         setSummaryError(message);
+        setRubrics([]);
       } finally {
-        setSummarizing(false);
+        setRubricParsing(false);
       }
     },
-    [aiApiKey, aiModel, aiProvider, rubrics],
+    [aiApiKey, aiModel, aiProvider],
   );
 
   const handleRubricUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
@@ -150,17 +154,27 @@ export default function CreateRoom() {
     setSummaryError("");
     setRubricSummary("");
     setEvaluationPrompt("");
+    setRubrics([]);
 
     try {
       const parsed = await parseRubricUpload(file);
-      setRubrics(parsed.rubrics);
       setRubricFileName(file.name);
 
-      const sourceText = parsed.sourceText || parsed.rubrics.map((r) => `${r.name}: ${r.description || ""}`).join("\n");
-      setRubricSourceText(sourceText);
-
-      // If API key is already set, auto-summarize
-      pendingSummarizeRef.current = { sourceText };
+      // For CSV files, rubrics are already parsed
+      if (!parsed.requiresAI && parsed.rubrics.length > 0) {
+        setRubrics(parsed.rubrics);
+        const sourceText = parsed.sourceText || parsed.rubrics.map((r) => `${r.name}: ${r.description || ""}`).join("\n");
+        setRubricSourceText(sourceText);
+        setEvaluationPrompt(generateEvaluationPrompt(parsed.rubrics, sourceText));
+      } else if (parsed.requiresAI) {
+        // For PDF/DOC/DOCX, store the file and extract rubrics when API key is available
+        pendingExtractRef.current = { file };
+        
+        // If API key is already set, auto-extract
+        if (hasApiKey(aiProvider, aiApiKey)) {
+          await doExtractRubricsFromImage(file);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to parse rubric file";
       setRubricFileName("");
@@ -171,16 +185,16 @@ export default function CreateRoom() {
       setRubricParsing(false);
       event.target.value = "";
     }
-  }, []);
+  }, [aiApiKey, aiProvider, doExtractRubricsFromImage]);
 
-  // Auto-summarize when rubrics are parsed AND API key is available
+  // Auto-extract rubrics when rubric file is uploaded AND API key is available
   useEffect(() => {
-    if (pendingSummarizeRef.current && hasApiKey(aiProvider, aiApiKey) && !summarizing && rubrics.length > 0) {
-      const { sourceText } = pendingSummarizeRef.current;
-      pendingSummarizeRef.current = null;
-      void doSummarize(sourceText);
+    if (pendingExtractRef.current && hasApiKey(aiProvider, aiApiKey) && !rubricParsing && rubrics.length === 0) {
+      const { file } = pendingExtractRef.current;
+      pendingExtractRef.current = null;
+      void doExtractRubricsFromImage(file);
     }
-  }, [aiApiKey, aiProvider, doSummarize, rubrics.length, summarizing]);
+  }, [aiApiKey, aiProvider, doExtractRubricsFromImage, rubricParsing, rubrics.length]);
 
   const handleCreate = useCallback(() => {
     const resolvedKey = resolveApiKey(aiProvider, aiApiKey);
@@ -215,13 +229,12 @@ export default function CreateRoom() {
   const resolvedKey = resolveApiKey(aiProvider, aiApiKey);
   const selectedProvider = AI_PROVIDERS.find((provider) => provider.value === aiProvider)!;
 
-  const isValid = Boolean(name.trim() && folderResult && rubrics.length > 0 && hasApi && !rubricParsing && !summarizing);
+  const isValid = Boolean(name.trim() && folderResult && rubrics.length > 0 && hasApi && !rubricParsing);
   const missingRequirements = [
     !name.trim() ? "Enter a room name." : null,
     !folderResult ? "Choose a Google Drive folder." : null,
     rubrics.length === 0 && !rubricParsing ? "Upload a rubric file with at least one criterion." : null,
-    rubricParsing ? "Wait for the rubric file to finish parsing." : null,
-    summarizing ? "Wait for the rubric summary to finish generating." : null,
+    rubricParsing ? "Wait for the rubric extraction to finish." : null,
     !hasApi
       ? `Enter an AI API key or set the ${selectedProvider.envVar} environment variable.`
       : null,
@@ -380,7 +393,7 @@ export default function CreateRoom() {
               <label className="flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed border-border p-4 transition-colors hover:border-primary/50 hover:bg-secondary/50">
                 <Upload className="h-5 w-5 text-muted-foreground" />
                 <span className="text-sm text-muted-foreground">
-                  {rubricParsing ? "Parsing rubric file..." : rubricFileName || "Choose CSV, PDF, DOC, or DOCX file..."}
+                  {rubricParsing ? "Extracting rubrics with AI..." : rubricFileName || "Choose CSV, PDF, DOC, or DOCX file..."}
                 </span>
                 <input type="file" accept={RUBRIC_FILE_ACCEPT} className="hidden" onChange={handleRubricUpload} disabled={rubricParsing} />
               </label>
@@ -405,10 +418,10 @@ export default function CreateRoom() {
               <div className="space-y-2">
                 <Label className="flex items-center gap-1.5">
                   <Sparkles className="h-4 w-4 text-accent" />
-                  Rubric Summary
+                  Extracted Rubrics
                 </Label>
                 <p className="text-xs text-muted-foreground">
-                  AI-generated summary of your rubric criteria. Edit it to adjust what the evaluator should look for.
+                  AI-extracted rubric criteria from your uploaded file. Edit the summary below to adjust what the evaluator should look for.
                 </p>
                 {summaryError && (
                   <p className="flex items-center gap-1.5 text-sm text-destructive">
@@ -419,25 +432,25 @@ export default function CreateRoom() {
                   value={rubricSummary || ""}
                   onChange={(event) => setRubricSummary(event.target.value)}
                   placeholder={
-                    summarizing
-                      ? "Generating rubric summary..."
+                    rubricParsing
+                      ? "Extracting rubrics from file..."
                       : hasApi
-                        ? "Upload a rubric file to see the AI summary here..."
+                        ? "Upload a rubric file to see the AI extraction here..."
                         : `Enter your API key or set ${selectedProvider.envVar}, then upload a rubric file.`
                   }
                   rows={8}
-                  disabled={summarizing}
+                  disabled={rubricParsing}
                   className="text-sm leading-relaxed"
                 />
-                {rubricSummary && (
+                {rubricSummary && pendingExtractRef.current && (
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => pendingSummarizeRef.current && doSummarize(rubricSourceText)}
-                    disabled={summarizing || !hasApi}
+                    onClick={() => pendingExtractRef.current && doExtractRubricsFromImage(pendingExtractRef.current.file)}
+                    disabled={rubricParsing || !hasApi}
                   >
                     <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                    Regenerate Summary
+                    Re-extract Rubrics
                   </Button>
                 )}
               </div>

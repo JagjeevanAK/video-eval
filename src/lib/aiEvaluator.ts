@@ -526,7 +526,108 @@ export async function evaluateClipWithScreenshot(
 }
 
 /**
- * Average scores from multiple clip evaluations to get final video scores
+ * Generate a concise summary from multiple clip descriptions for a single rubric.
+ * Uses AI to explain why the given score was assigned across all clips.
+ */
+export async function summarizeClipDescriptions(
+  rubricName: string,
+  clipResults: ClipEvaluationResult[],
+  averagedScore: number,
+  config: AIConfig,
+): Promise<string> {
+  const model = config.model || DEFAULT_MODELS[config.provider];
+
+  // Gather per-clip descriptions and scores
+  const clipDetails = clipResults.map((r, i) => ({
+    clip: i + 1,
+    score: r.scores[rubricName] ?? 0,
+    description: r.descriptions[rubricName] || '',
+  }));
+
+  const clipSummary = clipDetails
+    .map((c) => `Clip ${c.clip}: score=${c.score}${c.description ? `, ${c.description}` : ''}`)
+    .join('\n');
+
+  const prompt = `You evaluated a video across ${clipResults.length} clips on the rubric criterion: "${rubricName}".
+The averaged score is ${averagedScore}.
+
+Here are the per-clip observations:
+${clipSummary}
+
+Write a single concise sentence (max 25 words) explaining why this score was given. Focus on the overall pattern across clips, not individual clip details. Be specific and to the point.`;
+
+  let responseText: string;
+
+  switch (config.provider) {
+    case 'openai':
+    case 'openrouter':
+    case 'groq': {
+      const endpoint = PROVIDER_ENDPOINTS[config.provider];
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.2,
+          max_tokens: 60,
+        }),
+      });
+      if (!res.ok) throw new Error(`Summary API error: ${res.status} ${await res.text()}`);
+      const data = await res.json();
+      responseText = data.choices[0].message.content;
+      break;
+    }
+    case 'claude': {
+      const res = await fetch(PROVIDER_ENDPOINTS.claude, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': config.apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 60,
+          system: prompt,
+          messages: [{ role: 'user', content: 'Summarize the evaluation in one concise sentence.' }],
+        }),
+      });
+      if (!res.ok) throw new Error(`Summary API error: ${res.status} ${await res.text()}`);
+      const data = await res.json();
+      responseText = data.content[0].text;
+      break;
+    }
+    case 'gemini': {
+      const url = `${PROVIDER_ENDPOINTS.gemini}/${model}:generateContent?key=${config.apiKey}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 60 },
+        }),
+      });
+      if (!res.ok) throw new Error(`Summary API error: ${res.status} ${await res.text()}`);
+      const data = await res.json();
+      responseText = data.candidates[0].content.parts[0].text;
+      break;
+    }
+    default:
+      throw new Error(`Unsupported provider for summarization: ${config.provider}`);
+  }
+
+  // Clean up: remove quotes, trim
+  return responseText.replace(/^["']|["']$/g, '').trim();
+}
+
+/**
+ * Average scores from multiple clip evaluations to get final video scores.
+ * Descriptions are NOT combined here — use summarizeClipDescriptions() instead.
  */
 export function averageClipScores(
   clipResults: ClipEvaluationResult[],
@@ -544,14 +645,8 @@ export function averageClipScores(
     const avg = scores.reduce((sum, s) => sum + s, 0) / scores.length;
     // Round to 2 decimal places
     averagedScores[rubric.name] = Math.round(avg * 100) / 100;
-
-    // Combine descriptions: take the most common themes
-    const descs = clipResults
-      .map((r) => r.descriptions[rubric.name])
-      .filter(Boolean);
-    averagedDescriptions[rubric.name] = descs.length > 0
-      ? `Across ${clipResults.length} clips: ${descs.join(' | ')}`
-      : '';
+    // Leave descriptions empty — they will be filled by summarizeClipDescriptions()
+    averagedDescriptions[rubric.name] = '';
   }
 
   return { averagedScores, averagedDescriptions };

@@ -16,24 +16,39 @@ import {
 
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   evaluateVideoTranscript,
   extractTranscriptFromVideo,
   evaluateClipWithScreenshot,
   averageClipScores,
+  summarizeClipDescriptions,
   type EvaluationResult,
 } from "@/lib/aiEvaluator";
+import { hasApiKey } from "@/lib/apiKeyResolver";
 import { extractClipsFromVideo } from "@/lib/videoProcessor";
 import {
   appendToSheet,
   createSpreadsheet,
   downloadFileAsBlob,
+  getSheetValues,
   listVideosInFolder,
   moveFileToFolder,
   getEvaluatedVideos,
 } from "@/lib/googleApi";
 import { useAppStore } from "@/stores/useAppStore";
-import type { VideoFile, ClipEvaluationResult } from "@/types";
+import type { AIProvider, VideoFile, ClipEvaluationResult } from "@/types";
 
 interface RoomDetailProps {
   roomId: string;
@@ -55,6 +70,17 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
   const [processing, setProcessing] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [log, setLog] = useState<string[]>([]);
+  const [showApiKeyPrompt, setShowApiKeyPrompt] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<AIProvider>(room?.aiProvider || "gemini");
+  const [enteredApiKey, setEnteredApiKey] = useState("");
+
+  const PROVIDERS: { value: AIProvider; label: string; placeholder: string }[] = [
+    { value: "openai", label: "OpenAI", placeholder: "sk-..." },
+    { value: "claude", label: "Claude (Anthropic)", placeholder: "sk-ant-..." },
+    { value: "gemini", label: "Google Gemini", placeholder: "AIza..." },
+    { value: "openrouter", label: "OpenRouter", placeholder: "sk-or-..." },
+    { value: "groq", label: "Groq", placeholder: "gsk_..." },
+  ];
 
   const addLog = useCallback((message: string) => {
     setLog((previous) => [...previous, `[${new Date().toLocaleTimeString()}] ${message}`]);
@@ -137,6 +163,31 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
       return;
     }
 
+    // Check if API key is available
+    if (!hasApiKey(room.aiProvider, room.aiApiKey)) {
+      setSelectedProvider(room.aiProvider);
+      setEnteredApiKey("");
+      setShowApiKeyPrompt(true);
+      return;
+    }
+
+    startEvaluation();
+  }, [addLog, auth.accessToken, processing, room, updateRoom, updateVideo, videos]);
+
+  const handleApiKeySubmit = useCallback(() => {
+    if (!enteredApiKey.trim()) {
+      return;
+    }
+    updateRoom(room!.id, { aiProvider: selectedProvider, aiApiKey: enteredApiKey.trim() });
+    setShowApiKeyPrompt(false);
+    startEvaluation();
+  }, [enteredApiKey, selectedProvider, room, updateRoom]);
+
+  const startEvaluation = useCallback(async () => {
+    if (!room || !auth.accessToken || processing) {
+      return;
+    }
+
     setProcessing(true);
     updateRoom(room.id, { status: "processing" });
     addLog("Starting clip-based evaluation...");
@@ -154,6 +205,20 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
       }
 
       const pendingVideos = videos.filter((video) => video.status === "pending" || video.status === "error");
+
+      // Get the current row count to determine the starting Sr. number
+      let startingSrNumber = 1;
+      if (spreadsheetId) {
+        try {
+          const existingRows = await getSheetValues(spreadsheetId, "Evaluations!A:A", auth.accessToken);
+          // Subtract 1 for the header row
+          startingSrNumber = Math.max(1, existingRows.length);
+          addLog(`Starting from Sr. ${startingSrNumber} (${existingRows.length - 1} existing entries)`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to read existing rows, starting from 1";
+          addLog(`Warning: ${message}`);
+        }
+      }
 
       for (let index = 0; index < pendingVideos.length; index += 1) {
         const video = pendingVideos[index];
@@ -218,23 +283,41 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
           addLog("  Averaging scores from all clips...");
           const { averagedScores, averagedDescriptions } = averageClipScores(clipResults, room.rubrics);
 
+          // Generate AI-summarized descriptions (one concise sentence per rubric)
+          addLog("  Generating evaluation summaries...");
+          const summaryConfig = { provider: room.aiProvider, apiKey: room.aiApiKey, model: room.aiModel };
+          const summarizedDescriptions: Record<string, string> = {};
+          for (const rubric of room.rubrics) {
+            try {
+              summarizedDescriptions[rubric.name] = await summarizeClipDescriptions(
+                rubric.name,
+                clipResults,
+                averagedScores[rubric.name] || 0,
+                summaryConfig,
+              );
+            } catch (err) {
+              // Fallback to empty if summarization fails
+              summarizedDescriptions[rubric.name] = '';
+            }
+          }
+
           updateVideo(room.id, video.id, {
             status: "completed",
             scores: averagedScores,
-            descriptions: averagedDescriptions,
+            descriptions: summarizedDescriptions,
             clipEvaluationResults: clipResults,
             averagedScores,
-            averagedDescriptions,
+            averagedDescriptions: summarizedDescriptions,
           });
 
-          // Build combined description
+          // Build combined description for the sheet: one sentence per rubric explaining the score
           const combinedDescription = room.rubrics
             .map((rubric) => {
-              const desc = averagedDescriptions[rubric.name];
+              const desc = summarizedDescriptions[rubric.name];
               return desc ? `${rubric.name}: ${desc}` : null;
             })
             .filter(Boolean)
-            .join("; ");
+            .join(" ");
 
           // Calculate total marks (sum of all rubric scores)
           const totalMarks = room.rubrics.reduce(
@@ -244,7 +327,7 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
 
           const videoTitle = video.name.replace(/\.[^/.]+$/, "");
           const row = [
-            index + 1,
+            startingSrNumber + index,
             videoTitle,
             clipDefs.length,
             ...room.rubrics.map((rubric) => averagedScores[rubric.name] || 0),
@@ -321,6 +404,61 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
           </Button>
         </div>
       </div>
+
+      {/* API Key Prompt Dialog */}
+      <AlertDialog open={showApiKeyPrompt} onOpenChange={setShowApiKeyPrompt}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>API Key Required</AlertDialogTitle>
+            <AlertDialogDescription>
+              No API key is configured for this room. Select a provider and enter your API key to continue.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>Provider</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {PROVIDERS.map((provider) => (
+                  <button
+                    key={provider.value}
+                    type="button"
+                    onClick={() => setSelectedProvider(provider.value)}
+                    className={`rounded-lg border p-2 text-xs font-medium transition-all ${
+                      selectedProvider === provider.value
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border text-muted-foreground hover:border-foreground/20"
+                    }`}
+                  >
+                    {provider.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dialog-apiKey">API Key</Label>
+              <Input
+                id="dialog-apiKey"
+                type="password"
+                placeholder={PROVIDERS.find((p) => p.value === selectedProvider)?.placeholder}
+                value={enteredApiKey}
+                onChange={(e) => setEnteredApiKey(e.target.value)}
+                className="font-mono text-sm"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && enteredApiKey.trim()) {
+                    handleApiKeySubmit();
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleApiKeySubmit} disabled={!enteredApiKey.trim()}>
+              Start Evaluation
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div className="mb-6 grid grid-cols-5 gap-3">
         {[
