@@ -16,7 +16,7 @@ const footerLinks = [
 
 export function PublicShell({ children }: PublicShellProps) {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex min-h-screen flex-col bg-background">
       <header className="border-b border-border/70 bg-background/95 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-3">
@@ -25,7 +25,6 @@ export function PublicShell({ children }: PublicShellProps) {
             </div>
             <div>
               <p className="text-sm font-semibold text-foreground">VidEval</p>
-              <p className="text-xs text-muted-foreground">Google Drive video evaluation</p>
             </div>
           </Link>
 
@@ -43,7 +42,7 @@ export function PublicShell({ children }: PublicShellProps) {
         </div>
       </header>
 
-      <main>{children}</main>
+      <main className="flex-1">{children}</main>
 
       <footer className="border-t border-border/70 bg-card/40">
         <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-6 md:flex-row md:items-center md:justify-between">

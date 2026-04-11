@@ -130,6 +130,10 @@ let pendingReject: ((error: Error) => void) | null = null;
 let googleScriptPromise: Promise<void> | null = null;
 let gapiScriptPromise: Promise<void> | null = null;
 
+function toError(error: unknown, fallbackMessage: string): Error {
+  return error instanceof Error ? error : new Error(fallbackMessage);
+}
+
 export function loadGoogleScript(): Promise<void> {
   if (window.google?.accounts?.oauth2) {
     return Promise.resolve();
@@ -162,9 +166,9 @@ export function loadGoogleScript(): Promise<void> {
       googleScriptPromise = null;
       throw new Error("Google Identity Services loaded, but window.google.accounts.oauth2 is unavailable");
     }
-  }).catch((error) => {
+  }).catch((error: unknown) => {
     googleScriptPromise = null;
-    throw error;
+    throw toError(error, "Failed to initialize Google Identity Services");
   });
 
   return googleScriptPromise;
@@ -185,8 +189,8 @@ export function loadGapiScript(): Promise<void> {
         try {
           await window.gapi.client.load("https://www.googleapis.com/discovery/v1/apis/drive/v3/rest");
           resolve();
-        } catch (error) {
-          reject(error);
+        } catch (error: unknown) {
+          reject(toError(error, "Failed to initialize Google API client"));
         }
       });
     };
@@ -209,9 +213,9 @@ export function loadGapiScript(): Promise<void> {
     script.onload = initClient;
     script.onerror = () => reject(new Error("Failed to load GAPI"));
     document.head.appendChild(script);
-  }).catch((error) => {
+  }).catch((error: unknown) => {
     gapiScriptPromise = null;
-    throw error;
+    throw toError(error, "Failed to initialize Google API");
   });
 
   return gapiScriptPromise;
@@ -334,9 +338,9 @@ export async function openDriveFolderPicker(options: {
       resolve(result);
     };
 
-    const handleReject = (error: Error) => {
+    const handleReject = (error: unknown) => {
       unlockBodyScroll();
-      reject(error);
+      reject(toError(error, "Failed while selecting a Google Drive folder"));
     };
 
     const pickerBuilder = new window.google.picker.PickerBuilder()

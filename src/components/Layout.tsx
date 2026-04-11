@@ -3,9 +3,9 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, LogOut, Plus, Settings, Video } from "lucide-react";
+import { LayoutDashboard, LogOut, Plus, Video } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { SignOutButton } from "@/components/sign-out-button";
 import { useAppStore } from "@/stores/useAppStore";
 
 interface LayoutProps {
@@ -15,12 +15,10 @@ interface LayoutProps {
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { path: "/create", label: "New Room", icon: Plus },
-  { path: "/settings", label: "Settings", icon: Settings },
 ];
 
 export default function Layout({ children }: LayoutProps) {
   const auth = useAppStore((state) => state.auth);
-  const clearAuth = useAppStore((state) => state.clearAuth);
   const pathname = usePathname();
 
   return (
@@ -71,15 +69,14 @@ export default function Layout({ children }: LayoutProps) {
                 <p className="text-xs text-muted-foreground truncate">{auth.userEmail}</p>
               </div>
             </div>
-            <Button
+            <SignOutButton
               variant="ghost"
               size="sm"
               className="w-full justify-start text-muted-foreground"
-              onClick={clearAuth}
             >
               <LogOut className="w-4 h-4 mr-2" />
               Sign out
-            </Button>
+            </SignOutButton>
           </div>
         )}
       </aside>

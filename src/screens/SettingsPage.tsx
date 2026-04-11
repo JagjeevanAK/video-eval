@@ -4,12 +4,11 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 
 import Layout from "@/components/Layout";
+import { SignOutButton } from "@/components/sign-out-button";
 import { Button } from "@/components/ui/button";
-import { useAppStore } from "@/stores/useAppStore";
 
 export default function SettingsPage() {
   const router = useRouter();
-  const clearAuth = useAppStore((state) => state.clearAuth);
 
   return (
     <Layout>
@@ -35,16 +34,13 @@ export default function SettingsPage() {
             <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs">NEXT_PUBLIC_GOOGLE_APP_ID</span>
             {" "}for the Google Cloud project number.
           </p>
-          <Button
+          <SignOutButton
             variant="outline"
             size="sm"
-            onClick={() => {
-              clearAuth();
-              router.push("/dashboard");
-            }}
+            onSignedOut={() => router.push("/dashboard")}
           >
             Sign out &amp; Re-authenticate
-          </Button>
+          </SignOutButton>
         </section>
       </div>
     </Layout>
