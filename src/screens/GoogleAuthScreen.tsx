@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Video } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { toast as sonnerToast } from "@/components/ui/sonner";
+import { toast as appToast } from "@/components/ui/use-toast";
 import { initGoogleAuth, requestAccessToken, ensureGoogleScriptsLoaded } from "@/lib/googleApi";
 import { useAppStore } from "@/stores/useAppStore";
 
@@ -15,6 +17,18 @@ export default function GoogleAuthScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [initialized, setInitialized] = useState(false);
+
+  const showSignInError = useCallback((message: string) => {
+    setError(message);
+    appToast({
+      variant: "destructive",
+      title: "Google sign-in failed",
+      description: message,
+    });
+    sonnerToast.error("Google sign-in failed", {
+      description: message,
+    });
+  }, []);
 
   useEffect(() => {
     if (!GOOGLE_CLIENT_ID) {
@@ -38,13 +52,13 @@ export default function GoogleAuthScreen() {
       })
       .catch((initError) => {
         const message = initError instanceof Error ? initError.message : "Failed to initialize Google Auth";
-        setError(message);
+        showSignInError(message);
       });
-  }, [setAuth]);
+  }, [setAuth, showSignInError]);
 
   function handleSignIn() {
     if (!GOOGLE_CLIENT_ID) {
-      setError("NEXT_PUBLIC_GOOGLE_CLIENT_ID environment variable is not set.");
+      showSignInError("NEXT_PUBLIC_GOOGLE_CLIENT_ID environment variable is not set.");
       return;
     }
 
@@ -52,7 +66,7 @@ export default function GoogleAuthScreen() {
 
     if (!initialized) {
       // Scripts are still loading — show a message to wait
-      setError("Google sign-in is still loading. Please try again in a moment.");
+      showSignInError("Google sign-in is still loading. Please try again in a moment.");
       return;
     }
 
@@ -62,7 +76,7 @@ export default function GoogleAuthScreen() {
     requestAccessToken()
       .catch((signInError) => {
         const message = signInError instanceof Error ? signInError.message : "Sign-in was cancelled or failed";
-        setError(message);
+        showSignInError(message);
       })
       .finally(() => {
         setLoading(false);
