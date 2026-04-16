@@ -9,6 +9,7 @@ import {
   ExternalLink,
   FileSpreadsheet,
   Loader2,
+  Pencil,
   Play,
   RefreshCw,
   Video,
@@ -18,6 +19,14 @@ import Layout from "@/components/Layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -45,6 +54,7 @@ import {
   getSheetValues,
   listVideosInFolder,
   moveFileToFolder,
+  openDriveFolderPicker,
   getEvaluatedVideos,
 } from "@/lib/googleApi";
 import { useAppStore } from "@/stores/useAppStore";
@@ -53,6 +63,17 @@ import type { AIProvider, VideoFile, ClipEvaluationResult } from "@/types";
 interface RoomDetailProps {
   roomId: string;
 }
+
+const GOOGLE_PICKER_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_PICKER_API_KEY ?? "";
+const GOOGLE_APP_ID = process.env.NEXT_PUBLIC_GOOGLE_APP_ID ?? "";
+
+const PROVIDERS: { value: AIProvider; label: string; placeholder: string; envVar: string }[] = [
+  { value: "openai", label: "OpenAI", placeholder: "sk-...", envVar: "NEXT_PUBLIC_OPENAI_API_KEY" },
+  { value: "claude", label: "Claude (Anthropic)", placeholder: "sk-ant-...", envVar: "NEXT_PUBLIC_ANTHROPIC_API_KEY" },
+  { value: "gemini", label: "Google Gemini", placeholder: "AIza...", envVar: "NEXT_PUBLIC_GOOGLE_AI_API_KEY" },
+  { value: "openrouter", label: "OpenRouter", placeholder: "sk-or-...", envVar: "NEXT_PUBLIC_OPENROUTER_API_KEY" },
+  { value: "groq", label: "Groq", placeholder: "gsk_...", envVar: "NEXT_PUBLIC_GROQ_API_KEY" },
+];
 
 export default function RoomDetail({ roomId }: RoomDetailProps) {
   const router = useRouter();
@@ -73,14 +94,15 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
   const [showApiKeyPrompt, setShowApiKeyPrompt] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<AIProvider>(room?.aiProvider || "gemini");
   const [enteredApiKey, setEnteredApiKey] = useState("");
-
-  const PROVIDERS: { value: AIProvider; label: string; placeholder: string }[] = [
-    { value: "openai", label: "OpenAI", placeholder: "sk-..." },
-    { value: "claude", label: "Claude (Anthropic)", placeholder: "sk-ant-..." },
-    { value: "gemini", label: "Google Gemini", placeholder: "AIza..." },
-    { value: "openrouter", label: "OpenRouter", placeholder: "sk-or-..." },
-    { value: "groq", label: "Groq", placeholder: "gsk_..." },
-  ];
+  const [showEditRoomDialog, setShowEditRoomDialog] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editProvider, setEditProvider] = useState<AIProvider>("gemini");
+  const [editApiKey, setEditApiKey] = useState("");
+  const [editModel, setEditModel] = useState("");
+  const [editFolder, setEditFolder] = useState<{ id: string; name: string } | null>(null);
+  const [editFolderPicking, setEditFolderPicking] = useState(false);
+  const [editError, setEditError] = useState("");
 
   const addLog = useCallback((message: string) => {
     setLog((previous) => [...previous, `[${new Date().toLocaleTimeString()}] ${message}`]);
@@ -158,30 +180,89 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
     }
   }, [loadVideos, room, videos.length]);
 
-  const processVideos = useCallback(async () => {
-    if (!room || !auth.accessToken || processing) {
+  const openEditRoomDialog = useCallback(() => {
+    if (!room) {
+      return;
+    }
+    setEditName(room.name);
+    setEditDescription(room.description || "");
+    setEditProvider(room.aiProvider);
+    setEditApiKey(room.aiApiKey || "");
+    setEditModel(room.aiModel || "");
+    setEditFolder({ id: room.driveFolderId, name: room.driveFolderName });
+    setEditError("");
+    setShowEditRoomDialog(true);
+  }, [room]);
+
+  const handleEditFolderPick = useCallback(async () => {
+    if (!auth.accessToken) {
+      setEditError("Sign in with Google before changing the Drive folder.");
+      return;
+    }
+    if (!GOOGLE_PICKER_API_KEY) {
+      setEditError("NEXT_PUBLIC_GOOGLE_PICKER_API_KEY environment variable is not set.");
       return;
     }
 
-    // Check if API key is available
-    if (!hasApiKey(room.aiProvider, room.aiApiKey)) {
-      setSelectedProvider(room.aiProvider);
-      setEnteredApiKey("");
-      setShowApiKeyPrompt(true);
+    setEditFolderPicking(true);
+    setEditError("");
+    try {
+      const result = await openDriveFolderPicker({
+        accessToken: auth.accessToken,
+        developerKey: GOOGLE_PICKER_API_KEY,
+        appId: GOOGLE_APP_ID || undefined,
+      });
+      if (result) {
+        setEditFolder(result);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to open Google Drive picker";
+      setEditError(message);
+    } finally {
+      setEditFolderPicking(false);
+    }
+  }, [auth.accessToken]);
+
+  const saveRoomEdits = useCallback(() => {
+    if (!room) {
       return;
     }
 
-    startEvaluation();
-  }, [addLog, auth.accessToken, processing, room, updateRoom, updateVideo, videos]);
-
-  const handleApiKeySubmit = useCallback(() => {
-    if (!enteredApiKey.trim()) {
+    const trimmedName = editName.trim();
+    if (!trimmedName) {
+      setEditError("Room name is required.");
       return;
     }
-    updateRoom(room!.id, { aiProvider: selectedProvider, aiApiKey: enteredApiKey.trim() });
-    setShowApiKeyPrompt(false);
-    startEvaluation();
-  }, [enteredApiKey, selectedProvider, room, updateRoom]);
+    if (!editFolder) {
+      setEditError("Drive folder is required.");
+      return;
+    }
+
+    const nextDescription = editDescription.trim();
+    const nextApiKey = editApiKey.trim();
+    const nextModel = editModel.trim();
+    const folderChanged = room.driveFolderId !== editFolder.id;
+
+    updateRoom(room.id, {
+      name: trimmedName,
+      description: nextDescription,
+      aiProvider: editProvider,
+      aiApiKey: nextApiKey,
+      aiModel: nextModel || undefined,
+      driveFolderId: editFolder.id,
+      driveFolderName: editFolder.name,
+    });
+
+    setSelectedProvider(editProvider);
+    setShowEditRoomDialog(false);
+
+    if (folderChanged) {
+      setRoomVideos(room.id, []);
+      addLog(`Room updated. Loading videos from "${editFolder.name}"...`);
+    } else {
+      addLog("Room settings updated.");
+    }
+  }, [addLog, editApiKey, editDescription, editFolder, editModel, editName, editProvider, room, setRoomVideos, updateRoom]);
 
   const startEvaluation = useCallback(async () => {
     if (!room || !auth.accessToken || processing) {
@@ -355,6 +436,31 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
     }
   }, [addLog, auth.accessToken, processing, room, updateRoom, updateVideo, videos]);
 
+  const processVideos = useCallback(async () => {
+    if (!room || !auth.accessToken || processing) {
+      return;
+    }
+
+    // Check if API key is available
+    if (!hasApiKey(room.aiProvider, room.aiApiKey)) {
+      setSelectedProvider(room.aiProvider);
+      setEnteredApiKey("");
+      setShowApiKeyPrompt(true);
+      return;
+    }
+
+    startEvaluation();
+  }, [auth.accessToken, processing, room, startEvaluation]);
+
+  const handleApiKeySubmit = useCallback(() => {
+    if (!room || !enteredApiKey.trim()) {
+      return;
+    }
+    updateRoom(room.id, { aiProvider: selectedProvider, aiApiKey: enteredApiKey.trim() });
+    setShowApiKeyPrompt(false);
+    startEvaluation();
+  }, [enteredApiKey, room, selectedProvider, startEvaluation, updateRoom]);
+
   if (!room) {
     return (
       <Layout>
@@ -389,6 +495,10 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
           </div>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={openEditRoomDialog}>
+            <Pencil className="mr-1.5 h-4 w-4" />
+            Edit Room
+          </Button>
           <Button variant="outline" size="sm" onClick={loadVideos} disabled={loadingVideos}>
             <RefreshCw className={`mr-1.5 h-4 w-4 ${loadingVideos ? "animate-spin" : ""}`} />
             Refresh
@@ -404,6 +514,113 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
           </Button>
         </div>
       </div>
+
+      <Dialog open={showEditRoomDialog} onOpenChange={setShowEditRoomDialog}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Room Details</DialogTitle>
+            <DialogDescription>
+              Update AI settings, API key, room metadata, and Drive folder for this room.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="edit-room-name">Room Name *</Label>
+              <Input
+                id="edit-room-name"
+                value={editName}
+                onChange={(event) => setEditName(event.target.value)}
+                placeholder="e.g., Interview Round 1"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-room-description">Description</Label>
+              <Input
+                id="edit-room-description"
+                value={editDescription}
+                onChange={(event) => setEditDescription(event.target.value)}
+                placeholder="Optional description"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Drive Folder *</Label>
+              <Button type="button" variant="outline" onClick={handleEditFolderPick} disabled={editFolderPicking}>
+                {editFolderPicking ? "Opening..." : editFolder ? "Change folder" : "Choose folder"}
+              </Button>
+              {editFolder && (
+                <p className="text-sm text-muted-foreground">
+                  Selected: <span className="font-medium text-foreground">{editFolder.name}</span>
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>AI Provider</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {PROVIDERS.map((provider) => (
+                  <button
+                    key={provider.value}
+                    type="button"
+                    onClick={() => setEditProvider(provider.value)}
+                    className={`rounded-lg border p-2 text-xs font-medium transition-all ${
+                      editProvider === provider.value
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border text-muted-foreground hover:border-foreground/20"
+                    }`}
+                  >
+                    {provider.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-room-api-key">API Key</Label>
+              <Input
+                id="edit-room-api-key"
+                type="password"
+                value={editApiKey}
+                onChange={(event) => setEditApiKey(event.target.value)}
+                placeholder={PROVIDERS.find((provider) => provider.value === editProvider)?.placeholder}
+                className="font-mono text-sm"
+              />
+              {!editApiKey.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  Leave blank to use <span className="font-mono">{PROVIDERS.find((provider) => provider.value === editProvider)?.envVar}</span>.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-room-model">Model (optional)</Label>
+              <Input
+                id="edit-room-model"
+                value={editModel}
+                onChange={(event) => setEditModel(event.target.value)}
+                placeholder="Leave blank for provider default"
+                className="font-mono text-sm"
+              />
+            </div>
+
+            {editError && (
+              <p className="flex items-center gap-1.5 text-sm text-destructive">
+                <AlertCircle className="h-4 w-4" />
+                {editError}
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEditRoomDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={saveRoomEdits}>Save changes</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* API Key Prompt Dialog */}
       <AlertDialog open={showApiKeyPrompt} onOpenChange={setShowApiKeyPrompt}>
