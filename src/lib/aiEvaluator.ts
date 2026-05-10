@@ -1,5 +1,5 @@
 import type { AIProvider, RubricCriteria, ClipEvaluationResult } from '@/types';
-import { splitVideoIntoChunks } from '@/lib/videoProcessor';
+import { splitAudioForTranscription } from '@/lib/videoProcessor';
 import { logger } from '@/lib/logger';
 
 interface AIConfig {
@@ -151,11 +151,23 @@ export async function extractTranscriptFromVideo(
   };
   const providerLimit = MAX_FILE_SIZE_MB[config.provider] || 25;
 
+  if (config.provider === 'openai' || config.provider === 'groq') {
+    logger.info("Transcription", "Preparing audio-only input", { provider: config.provider, limitMB: providerLimit });
+    const audioChunks = await splitAudioForTranscription(videoBlob, providerLimit, progress);
+
+    if (audioChunks.length === 1) {
+      const audioSizeMB = (audioChunks[0].size / (1024 * 1024)).toFixed(2);
+      return transcribeVideoBlob(audioChunks[0], config, audioSizeMB, progress);
+    }
+
+    return transcribeChunks(audioChunks, config, progress);
+  }
+
   // If video exceeds limit, split into chunks and transcribe each
   if (videoSizeBytes > providerLimit * 1024 * 1024) {
     logger.info("Transcription", "Video exceeds provider limit, splitting into chunks", { limitMB: providerLimit });
     progress?.onLog?.(`  Video exceeds ${providerLimit} MB ${config.provider} limit. Splitting into chunks...`);
-    return transcribeInChunks(videoBlob, config, providerLimit, progress);
+    throw new Error(`Direct transcription chunking is not supported for ${config.provider}. Please use OpenAI, Gemini, or Groq for auto-transcription.`);
   }
 
   // Warn if approaching limit
@@ -214,7 +226,7 @@ async function transcribeVideoBlob(
   if (config.provider === 'openai') {
     logger.info("Transcription", "Using OpenAI Whisper API");
     const formData = new FormData();
-    formData.append('file', videoBlob, 'video.mp4');
+    formData.append('file', videoBlob, getTranscriptionFileName(videoBlob));
     formData.append('model', 'whisper-1');
 
     logger.info("Transcription", "Sending to OpenAI Whisper", { sizeMB: videoSizeMB });
@@ -235,7 +247,7 @@ async function transcribeVideoBlob(
   if (config.provider === 'groq') {
     logger.info("Transcription", "Using Groq Whisper API");
     const formData = new FormData();
-    formData.append('file', videoBlob, 'video.mp4');
+    formData.append('file', videoBlob, getTranscriptionFileName(videoBlob));
     formData.append('model', 'whisper-large-v3');
 
     const chunkLabel = chunkContext ? `chunk ${chunkContext.current}/${chunkContext.total}` : 'video';
@@ -268,18 +280,13 @@ async function transcribeVideoBlob(
 /**
  * Split video into chunks, transcribe each, and combine transcripts
  */
-async function transcribeInChunks(
-  videoBlob: Blob,
+async function transcribeChunks(
+  chunks: Blob[],
   config: AIConfig,
-  maxChunkSizeMB: number,
   progress?: TranscriptionProgress,
 ): Promise<string> {
-  logger.info("Transcription", "Splitting video into chunks", { provider: config.provider, maxChunkSizeMB });
-  progress?.onLog?.(`  Preparing ${maxChunkSizeMB} MB transcription chunks...`);
-
-  const chunks = await splitVideoIntoChunks(videoBlob, maxChunkSizeMB);
   logger.info("Transcription", "Created chunks, transcribing each", { count: chunks.length });
-  progress?.onLog?.(`  Created ${chunks.length} transcription chunk(s) at up to ${maxChunkSizeMB} MB each`);
+  progress?.onLog?.(`  Created ${chunks.length} audio transcription chunk(s)`);
 
   const transcripts: string[] = [];
 
@@ -308,6 +315,14 @@ async function transcribeInChunks(
   logger.info("Transcription", "Combined transcript completed", { length: combined.length, chunks: chunks.length });
   progress?.onLog?.(`  Combined ${chunks.length} chunk transcript(s): ${combined.length} characters`);
   return combined;
+}
+
+function getTranscriptionFileName(blob: Blob): string {
+  if (blob.type.includes('webm')) return 'audio.webm';
+  if (blob.type.includes('mp4')) return 'audio.mp4';
+  if (blob.type.includes('mpeg')) return 'audio.mp3';
+  if (blob.type.includes('wav')) return 'audio.wav';
+  return 'audio.webm';
 }
 
 function blobToBase64(blob: Blob): Promise<string> {

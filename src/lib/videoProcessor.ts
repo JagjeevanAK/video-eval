@@ -1,6 +1,21 @@
 import type { VideoClip } from '@/types';
 
 const CLIP_DURATION_SEC = 30;
+const AUDIO_BITRATE = 64_000;
+const AUDIO_MIME_TYPES = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/mp4',
+];
+
+interface MediaProgress {
+  onLog?: (message: string) => void;
+}
+
+function getSupportedAudioMimeType(): string {
+  if (typeof MediaRecorder === 'undefined') return '';
+  return AUDIO_MIME_TYPES.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || '';
+}
 
 /**
  * Split a large video blob into smaller chunks of approximately `maxChunkSizeMB` each.
@@ -40,6 +55,71 @@ export async function splitVideoIntoChunks(
 
   URL.revokeObjectURL(url);
   return chunks;
+}
+
+/**
+ * Extract and compress only the video's audio track for transcription APIs.
+ * This avoids sending or re-recording video frames when Whisper only needs audio.
+ */
+export async function extractAudioForTranscription(
+  videoBlob: Blob,
+  progress?: MediaProgress,
+): Promise<Blob> {
+  const duration = await getVideoDuration(videoBlob);
+  const sourceSizeMB = (videoBlob.size / (1024 * 1024)).toFixed(2);
+  progress?.onLog?.(`  Preparing audio-only transcription input from ${sourceSizeMB} MB video...`);
+
+  const url = URL.createObjectURL(videoBlob);
+  try {
+    const audioBlob = await recordAudioSegment(url, 0, duration);
+    const audioSizeMB = (audioBlob.size / (1024 * 1024)).toFixed(2);
+    progress?.onLog?.(`  Audio-only transcription input ready: ${audioSizeMB} MB`);
+    return audioBlob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * Split audio-only transcription input into provider-sized chunks.
+ * The full audio blob is usually small enough; chunk recording is a fallback for long videos.
+ */
+export async function splitAudioForTranscription(
+  videoBlob: Blob,
+  maxChunkSizeMB: number,
+  progress?: MediaProgress,
+): Promise<Blob[]> {
+  const audioBlob = await extractAudioForTranscription(videoBlob, progress);
+  const maxChunkBytes = maxChunkSizeMB * 1024 * 1024;
+
+  if (audioBlob.size <= maxChunkBytes) {
+    return [audioBlob];
+  }
+
+  const duration = await getVideoDuration(videoBlob);
+  const estimatedChunks = Math.ceil(audioBlob.size / maxChunkBytes);
+  const numChunks = Math.max(2, Math.ceil(estimatedChunks * 1.25));
+  const chunkDuration = duration / numChunks;
+  const url = URL.createObjectURL(videoBlob);
+
+  progress?.onLog?.(
+    `  Audio is still over ${maxChunkSizeMB} MB. Splitting into ${numChunks} audio chunk(s)...`,
+  );
+
+  try {
+    const chunks: Blob[] = [];
+    for (let i = 0; i < numChunks; i += 1) {
+      const start = i * chunkDuration;
+      const end = Math.min((i + 1) * chunkDuration, duration);
+      progress?.onLog?.(
+        `  Preparing audio chunk ${i + 1}/${numChunks} (${Math.round(start)}s - ${Math.round(end)}s)...`,
+      );
+      chunks.push(await recordAudioSegment(url, start, end));
+    }
+    return chunks;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /**
@@ -114,6 +194,112 @@ function recordVideoSegment(
 
     video.onerror = () => {
       reject(new Error('Failed to load video for chunking'));
+    };
+  });
+}
+
+function recordAudioSegment(
+  videoUrl: string,
+  startTime: number,
+  endTime: number,
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.preload = 'auto';
+    video.muted = true;
+    video.playsInline = true;
+    video.src = videoUrl;
+
+    const duration = endTime - startTime;
+    const chunks: Blob[] = [];
+    const mimeType = getSupportedAudioMimeType();
+    let mediaRecorder: MediaRecorder | null = null;
+    let stopTimer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+
+    const cleanup = () => {
+      if (stopTimer) clearTimeout(stopTimer);
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    };
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const stopRecorder = () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+    };
+
+    video.onloadedmetadata = () => {
+      if (!Number.isFinite(video.duration) || video.duration <= 0) {
+        fail(new Error('Failed to read video duration for audio extraction'));
+        return;
+      }
+      video.currentTime = startTime;
+    };
+
+    video.onseeked = () => {
+      try {
+        const videoEl = video as HTMLVideoElement & { captureStream?: () => MediaStream; mozCaptureStream?: () => MediaStream };
+        const sourceStream = videoEl.captureStream
+          ? videoEl.captureStream()
+          : videoEl.mozCaptureStream?.();
+
+        if (!sourceStream) {
+          fail(new Error('Audio extraction requires browser captureStream support'));
+          return;
+        }
+
+        const audioTracks = sourceStream.getAudioTracks();
+        if (audioTracks.length === 0) {
+          fail(new Error('No audio track found in video'));
+          return;
+        }
+
+        const audioStream = new MediaStream(audioTracks);
+        mediaRecorder = new MediaRecorder(audioStream, {
+          ...(mimeType ? { mimeType } : {}),
+          audioBitsPerSecond: AUDIO_BITRATE,
+        });
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = () => {
+          if (settled) return;
+          settled = true;
+          audioStream.getTracks().forEach((track) => track.stop());
+          sourceStream.getTracks().forEach((track) => track.stop());
+          cleanup();
+          resolve(new Blob(chunks, { type: mimeType || 'audio/webm' }));
+        };
+
+        mediaRecorder.onerror = () => {
+          fail(new Error('MediaRecorder failed during audio extraction'));
+        };
+
+        video.onended = stopRecorder;
+        mediaRecorder.start();
+        video.play().catch((err) => {
+          fail(new Error(`Failed to play video for audio extraction: ${err instanceof Error ? err.message : String(err)}`));
+        });
+
+        stopTimer = setTimeout(stopRecorder, (duration + 0.5) * 1000);
+      } catch (err) {
+        fail(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
+
+    video.onerror = () => {
+      fail(new Error('Failed to load video for audio extraction'));
     };
   });
 }
