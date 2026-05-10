@@ -136,7 +136,7 @@ export async function extractTranscriptFromVideo(videoBlob: Blob, config: AIConf
 
   // Provider file size limits
   const MAX_FILE_SIZE_MB: Record<string, number> = {
-    groq: 25,
+    groq: 30,
     openai: 25,
     gemini: 2000,
   };
