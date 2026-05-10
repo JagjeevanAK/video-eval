@@ -8,6 +8,10 @@ interface AIConfig {
   model?: string;
 }
 
+interface TranscriptionProgress {
+  onLog?: (message: string) => void;
+}
+
 export interface EvaluationResult {
   scores: Record<string, number>;
   descriptions: Record<string, string>;
@@ -128,11 +132,16 @@ export async function evaluateVideoTranscript(
   return { scores, descriptions };
 }
 
-export async function extractTranscriptFromVideo(videoBlob: Blob, config: AIConfig): Promise<string> {
+export async function extractTranscriptFromVideo(
+  videoBlob: Blob,
+  config: AIConfig,
+  progress?: TranscriptionProgress,
+): Promise<string> {
   // Log video size for debugging
   const videoSizeMB = (videoBlob.size / (1024 * 1024)).toFixed(2);
   const videoSizeBytes = videoBlob.size;
   logger.info("Transcription", "Video info", { sizeMB: videoSizeMB, sizeBytes: videoSizeBytes, type: videoBlob.type || 'unknown', provider: config.provider });
+  progress?.onLog?.(`  Transcription input: ${videoSizeMB} MB via ${config.provider}`);
 
   // Provider file size limits
   const MAX_FILE_SIZE_MB: Record<string, number> = {
@@ -145,7 +154,8 @@ export async function extractTranscriptFromVideo(videoBlob: Blob, config: AIConf
   // If video exceeds limit, split into chunks and transcribe each
   if (videoSizeBytes > providerLimit * 1024 * 1024) {
     logger.info("Transcription", "Video exceeds provider limit, splitting into chunks", { limitMB: providerLimit });
-    return transcribeInChunks(videoBlob, config, providerLimit);
+    progress?.onLog?.(`  Video exceeds ${providerLimit} MB ${config.provider} limit. Splitting into chunks...`);
+    return transcribeInChunks(videoBlob, config, providerLimit, progress);
   }
 
   // Warn if approaching limit
@@ -154,7 +164,7 @@ export async function extractTranscriptFromVideo(videoBlob: Blob, config: AIConf
   }
 
   // Direct transcription (video within size limit)
-  return transcribeVideoBlob(videoBlob, config, videoSizeMB);
+  return transcribeVideoBlob(videoBlob, config, videoSizeMB, progress);
 }
 
 /**
@@ -164,6 +174,8 @@ async function transcribeVideoBlob(
   videoBlob: Blob,
   config: AIConfig,
   videoSizeMB: string,
+  progress?: TranscriptionProgress,
+  chunkContext?: { current: number; total: number },
 ): Promise<string> {
   // For Gemini, we can send video directly
   if (config.provider === 'gemini') {
@@ -226,6 +238,10 @@ async function transcribeVideoBlob(
     formData.append('file', videoBlob, 'video.mp4');
     formData.append('model', 'whisper-large-v3');
 
+    const chunkLabel = chunkContext ? `chunk ${chunkContext.current}/${chunkContext.total}` : 'video';
+    progress?.onLog?.(
+      `  Groq transcription call (${chunkLabel}): POST /openai/v1/audio/transcriptions, model whisper-large-v3, ${videoSizeMB} MB`,
+    );
     logger.info("Transcription", "Sending to Groq Whisper", { sizeMB: videoSizeMB, fileSizeBytes: videoBlob.size });
     const data = await fetchWithRetry<{ text: string }>(() =>
       fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
@@ -235,8 +251,12 @@ async function transcribeVideoBlob(
       }),
       5,
       'Transcription-Groq',
+      progress?.onLog,
     );
     logger.info("Transcription", "Groq Whisper transcript length", { length: data.text?.length || 0 });
+    progress?.onLog?.(
+      `  Groq transcription completed (${chunkLabel}): ${data.text?.length || 0} transcript characters`,
+    );
     return data.text;
   }
 
@@ -252,24 +272,33 @@ async function transcribeInChunks(
   videoBlob: Blob,
   config: AIConfig,
   maxChunkSizeMB: number,
+  progress?: TranscriptionProgress,
 ): Promise<string> {
   logger.info("Transcription", "Splitting video into chunks", { provider: config.provider, maxChunkSizeMB });
+  progress?.onLog?.(`  Preparing ${maxChunkSizeMB} MB transcription chunks...`);
 
   const chunks = await splitVideoIntoChunks(videoBlob, maxChunkSizeMB);
   logger.info("Transcription", "Created chunks, transcribing each", { count: chunks.length });
+  progress?.onLog?.(`  Created ${chunks.length} transcription chunk(s) at up to ${maxChunkSizeMB} MB each`);
 
   const transcripts: string[] = [];
 
   for (let i = 0; i < chunks.length; i++) {
     const chunkSizeMB = (chunks[i].size / (1024 * 1024)).toFixed(2);
     logger.info("Transcription", "Transcribing chunk", { current: i + 1, total: chunks.length, sizeMB: chunkSizeMB });
+    progress?.onLog?.(`  Transcribing chunk ${i + 1}/${chunks.length} (${chunkSizeMB} MB)...`);
 
     try {
-      const transcript = await transcribeVideoBlob(chunks[i], config, chunkSizeMB);
+      const transcript = await transcribeVideoBlob(chunks[i], config, chunkSizeMB, progress, {
+        current: i + 1,
+        total: chunks.length,
+      });
       transcripts.push(transcript);
       logger.info("Transcription", "Chunk transcript completed", { chunk: i + 1, length: transcript.length });
+      progress?.onLog?.(`  Chunk ${i + 1}/${chunks.length} transcript ready (${transcript.length} characters)`);
     } catch (err) {
       logger.error("Transcription", "Failed to transcribe chunk", { chunk: i + 1, error: err });
+      progress?.onLog?.(`  ${config.provider} transcription failed for chunk ${i + 1}/${chunks.length}`);
       throw new Error(`Failed to transcribe chunk ${i + 1}/${chunks.length}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -277,6 +306,7 @@ async function transcribeInChunks(
   // Combine transcripts with separators
   const combined = transcripts.join('\n\n--- [chunk boundary] ---\n\n');
   logger.info("Transcription", "Combined transcript completed", { length: combined.length, chunks: chunks.length });
+  progress?.onLog?.(`  Combined ${chunks.length} chunk transcript(s): ${combined.length} characters`);
   return combined;
 }
 
@@ -301,6 +331,7 @@ async function fetchWithRetry<T>(
   fetchFn: () => Promise<Response>,
   maxRetries: number = 5,
   label: string = 'API',
+  onLog?: (message: string) => void,
 ): Promise<T> {
   let lastError: Error | null = null;
 
@@ -314,6 +345,7 @@ async function fetchWithRetry<T>(
       // Not ok — check if it's a 429
       if (res.status === 429) {
         logger.warn(label, "Rate limit hit", { attempt: attempt + 1, maxRetries: maxRetries + 1 });
+        onLog?.(`  ${label} rate limit hit on attempt ${attempt + 1}/${maxRetries + 1}`);
 
         // Try to parse suggested retry delay from Groq error message
         const delayMatch = errorText.match(/try again in ([\d.]+)s/i);
@@ -321,11 +353,13 @@ async function fetchWithRetry<T>(
           const suggestedDelay = parseFloat(delayMatch[1]) * 1000;
           const waitMs = Math.min(suggestedDelay + 500, 30000); // Cap at 30s
           logger.info(label, "Waiting (suggested delay)", { waitMs, suggestedDelay });
+          onLog?.(`  ${label} retrying in ${Math.round(waitMs / 1000)}s`);
           await new Promise((r) => setTimeout(r, waitMs));
         } else {
           // Exponential backoff: 2s, 4s, 8s, 16s, 30s
           const waitMs = Math.min(Math.pow(2, attempt + 1) * 1000, 30000);
           logger.info(label, "Waiting (exponential backoff)", { waitMs, attempt: attempt + 1 });
+          onLog?.(`  ${label} retrying in ${Math.round(waitMs / 1000)}s`);
           await new Promise((r) => setTimeout(r, waitMs));
         }
 

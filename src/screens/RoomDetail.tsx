@@ -320,7 +320,7 @@ export default function RoomDetail({ roomId }: RoomDetailProps) {
 
           // Get full transcript once for the entire video
           addLog("  Extracting full video transcript...");
-          const fullTranscript = await extractTranscriptFromVideo(blob, aiConfig);
+          const fullTranscript = await extractTranscriptFromVideo(blob, aiConfig, { onLog: addLog });
 
           // Calculate transcript segments for each clip (rough estimate based on time)
           // We'll split the transcript proportionally across clips
